@@ -40,13 +40,37 @@ resolve_self() {
 SELF_DIR=$(resolve_self)
 TEMPLATE_DIR="$SELF_DIR/../templates"
 
+# ── CLI UI 킷 (컬러는 TTY에서만, NO_COLOR 존중) ────────────────────────────────
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_B=$'\033[1m'; C_D=$'\033[2m'; C_C=$'\033[36m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_X=$'\033[0m'
+else
+  C_B=""; C_D=""; C_C=""; C_G=""; C_Y=""; C_R=""; C_X=""
+fi
+banner() {
+  echo ""
+  echo "${C_C}${C_B}════════════════════════════════════════════════════${C_X}"
+  echo "${C_C}${C_B}   🔗 claude-tell-bridge — $1${C_X}"
+  echo "${C_C}${C_B}════════════════════════════════════════════════════${C_X}"
+}
+step() { echo ""; echo "${C_Y}${C_B}▶ $1${C_X}"; }
+note() { echo "${C_D}  $1${C_X}"; }
+ok()   { echo "${C_G}  ✔ $1${C_X}"; }
+skip() { echo "${C_D}  ⤼ $1${C_X}"; }
+warn() { echo "${C_R}  ⚠ $1${C_X}"; }
+ask()  { printf "%s" "${C_B}$1${C_X}"; }
+abspath() { # ~ 확장 + 상대경로 → 절대경로 (실행 위치가 달라도 설정이 항상 유효하도록)
+  local d="$1"; d=${d/#\~/$HOME}
+  case "$d" in ""|/*) ;; *) d="$PWD/$d" ;; esac
+  printf '%s' "$d"
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # 서브커맨드
 # ══════════════════════════════════════════════════════════════════════════════
 
 cmd_doctor() {
   local ok=0
-  echo "── tell doctor ──"
+  banner "doctor · 환경 점검"
   if command -v tmux >/dev/null 2>&1; then echo "✅ tmux $(tmux -V | awk '{print $2}')"; else echo "❌ tmux 없음 — brew install tmux"; ok=1; fi
   if command -v claude >/dev/null 2>&1; then echo "✅ claude $(claude --version 2>/dev/null | awk '{print $1}')"; else echo "⚠️  claude CLI 없음 — 메시징은 되지만 받는 쪽 AI가 없음"; fi
   if [ -n "${TMUX:-}" ]; then echo "✅ tmux 세션 안에서 실행 중 (발신자 헤더 자동)"; else echo "ℹ️  tmux 밖 — 발신자(from) 헤더 없이 전송됨"; fi
@@ -56,117 +80,127 @@ cmd_doctor() {
   return $ok
 }
 
+# 세션 간 응답 연결 설정 (내부 동작 — 출력은 조용히, 사용자에겐 '패널 추가/편입 완료'로만 보임)
 append_role_template() { # $1=dir  $2=session  $3=roles(공백구분)  $4=hub_session  $5=hub_role
   local dir="$1" session="$2" roles="$3" hub_s="$4" hub_r="$5"
   local f="$dir/CLAUDE.md" t="$TEMPLATE_DIR/CLAUDE-section-role.md"
-  [ -f "$t" ] || { echo "  ⚠️ 템플릿 없음: $t"; return 1; }
+  [ -f "$t" ] || { warn "설치 손상 — 'npm i -g claude-tell-bridge' 재설치 필요"; return 1; }
   if [ -f "$f" ] && grep -q '세션 요청 - KEY' "$f" 2>/dev/null; then
-    echo "  ↷ 이미 규약 있음: $f (건너뜀)"; return 0
+    return 0   # 이미 연결돼 있음 — 조용히 통과
   fi
   mkdir -p "$dir"
   { [ -f "$f" ] && echo ""; sed -e "s/{{SESSION}}/$session/g" -e "s/{{ROLES}}/$roles/g" \
         -e "s/{{HUB_SESSION}}/$hub_s/g" -e "s/{{HUB_ROLE}}/$hub_r/g" "$t" \
     | sed -e 's# (보통 발신자는 허브 `/`)##'; } >> "$f"   # 허브 없이 쓰면 허브 문구 제거
-  echo "  ✍️  규약 추가됨: $f"
+  return 0
 }
 
 make_hub() { # 허브 세션 등록 + 허브 CLAUDE.md 생성. 성공 시 HUB/HUBR 설정됨
-  printf "  허브 세션 이름 [hub]: "; read -r HUB; HUB=${HUB:-hub}
-  printf "  허브 역할(패널 이름) [hub]: "; read -r HUBR; HUBR=${HUBR:-hub}
-  printf "  허브 작업 디렉터리 [~/tell-hub]: "; read -r HUBD; HUBD=${HUBD:-$HOME/tell-hub}; HUBD=${HUBD/#\~/$HOME}
+  ask "  허브 세션 이름 [hub]: "; read -r HUB; HUB=${HUB:-hub}
+  ask "  허브 역할(패널 이름) [hub]: "; read -r HUBR; HUBR=${HUBR:-hub}
+  ask "  허브 작업 디렉터리 [~/tell-hub]: "; read -r HUBD; HUBD=$(abspath "${HUBD:-$HOME/tell-hub}")
   echo "$HUB|$HUBR|$HUBD" >> "$WS_CONF"; mkdir -p "$HUBD"
   if [ -f "$TEMPLATE_DIR/CLAUDE-section-hub.md" ] && ! grep -q '허브(비서)' "$HUBD/CLAUDE.md" 2>/dev/null; then
     { [ -f "$HUBD/CLAUDE.md" ] && echo ""; sed -e "s/{{HUB_SESSION}}/$HUB/g" -e "s/{{HUB_ROLE}}/$HUBR/g" "$TEMPLATE_DIR/CLAUDE-section-hub.md"; } >> "$HUBD/CLAUDE.md"
-    echo "  ✍️  허브 CLAUDE.md 생성: $HUBD/CLAUDE.md"
+    ok "허브 CLAUDE.md 생성: $HUBD/CLAUDE.md"
   fi
+  ok "허브 등록: $HUB:$HUBR → $HUBD"
 }
 
 cmd_init() {
-  echo "── tell init — 셋업 마법사 ──"
-  echo "  개념: 세션 = 프로젝트 / 패널(역할) = 그 프로젝트에 상주하는 Claude 하나"
+  banner "init · 셋업 마법사"
+  note "개념: 세션 = 프로젝트 / 패널(역할) = 그 프로젝트에 상주하는 Claude 하나"
   mkdir -p "$CONFIG_DIR"
   HUB=""; HUBR=""
-  echo ""
-  echo "[1/2] 총괄 관리(허브) 세션 (선택)"
-  echo "      허브란? 여러 프로젝트를 대신 지휘해주는 '비서' Claude 세션입니다."
-  echo "      예) 허브에게 \"서버에 API 추가하고 웹에 버튼 달아줘\" 한 마디"
-  echo "          → 허브가 서버·웹 세션에 각각 시키고, 끝나면 결과를 모아 보고합니다."
-  echo "      없어도 됩니다 — 세션끼리는 직접 대화 가능. 나중에 'tell hub'로 추가할 수 있습니다."
-  printf "총괄 관리 세션을 만들까요? [y/N]: "; read -r MK
+  step "[1/2] 총괄 관리(허브) 세션 — 선택사항"
+  note "허브란? 여러 프로젝트를 대신 지휘해주는 '비서' Claude 세션입니다."
+  note "예) 허브에게 \"서버에 API 추가하고 웹에 버튼 달아줘\" 한 마디"
+  note "    → 허브가 서버·웹 세션에 각각 시키고, 끝나면 결과를 모아 보고합니다."
+  note "없어도 됩니다 — 세션끼리는 직접 대화 가능. 나중에 'tell hub'로 추가할 수 있습니다."
+  ask "총괄 관리 세션을 만들까요? [y/N]: "; read -r MK
   if [ "$MK" = "y" ] || [ "$MK" = "Y" ]; then
     make_hub
   else
-    echo "  ⤼ 건너뜀 (나중에 추가: tell hub)"
+    skip "건너뜀 (나중에 추가: tell hub)"
   fi
-  echo ""
-  echo "[2/2] 프로젝트 등록"
-  echo "      프로젝트(세션) 하나에 역할(패널)을 여러 개 둘 수 있습니다. 예: 서버·웹·앱"
+  step "[2/2] 프로젝트 등록"
+  note "프로젝트(세션) 하나에 역할(패널)을 여러 개 둘 수 있습니다. 예: 서버·웹·앱"
   while :; do
-    printf "프로젝트 이름 = 세션 이름 (빈 값 = 완료): "; read -r S; [ -z "$S" ] && break
+    echo ""
+    ask "프로젝트 이름 = 세션 이름 (빈 값 = 완료): "; read -r S; [ -z "$S" ] && break
     while :; do
-      printf "  이 Claude의 역할 = 패널 이름 (예: 서버, 빈 값 = 다음 프로젝트): "; read -r R; [ -z "$R" ] && break
-      printf "  '%s' 담당 디렉터리: " "$R"; read -r D; D=${D/#\~/$HOME}
-      [ -z "$D" ] && { echo "  ⚠️ 디렉터리는 필수"; continue; }
+      echo ""
+      note "· 패널 = 이 프로젝트에 상주할 Claude 하나 (예: 서버 / 웹 / 앱)"
+      ask "  추가할 패널(역할) 이름 (빈 값 = 이 프로젝트 완료): "; read -r R; [ -z "$R" ] && break
+      ask "  '$R' 담당 디렉터리: "; read -r D; D=$(abspath "$D")
+      [ -z "$D" ] && { warn "디렉터리는 필수"; continue; }
       echo "$S|$R|$D" >> "$WS_CONF"
       append_role_template "$D" "$S" "$R" "$HUB" "$HUBR"
+      ok "패널 추가 완료 — ${C_B}$S · $R${C_X}"
+      note "────────────────────────────────────────"
     done
+    ok "프로젝트 '$S' 구성 완료"
   done
+  banner "완료"
+  ok "저장: $WS_CONF"
   echo ""
-  echo "✅ 저장: $WS_CONF"
-  echo "다음 단계:"
-  [ -n "$HUB" ] && echo "  tell ws $HUB           # 허브 띄우기"
-  echo "  tell ws <프로젝트>      # 프로젝트 띄우기 (패널 분할 + claude 자동 실행)"
-  echo "  tell list              # 말 걸 수 있는 주소 확인"
+  echo "${C_B}다음 단계:${C_X}"
+  [ -n "$HUB" ] && echo "  ${C_C}tell ws $HUB${C_X}           # 허브 띄우기"
+  echo "  ${C_C}tell ws <프로젝트>${C_X}      # 프로젝트 띄우기 (패널 분할 + claude 자동 실행)"
+  echo "  ${C_C}tell list${C_X}              # 말 걸 수 있는 주소 확인"
 }
 
 cmd_adopt() {
-  echo "── tell adopt — 떠 있는 tmux 세션을 브릿지에 편입 (재시작 불필요) ──"
-  command -v tmux >/dev/null 2>&1 || { echo "tmux 없음"; exit 1; }
-  tmux ls >/dev/null 2>&1 || { echo "떠 있는 tmux 세션 없음 — 'tell init'을 쓰세요"; exit 1; }
+  banner "adopt · 떠 있는 세션 편입 (재시작 불필요)"
+  command -v tmux >/dev/null 2>&1 || { warn "tmux 없음"; exit 1; }
+  tmux ls >/dev/null 2>&1 || { warn "떠 있는 tmux 세션 없음 — 'tell init'을 쓰세요"; exit 1; }
   mkdir -p "$CONFIG_DIR"
-  echo ""
-  echo "[1/2] 총괄 관리(허브) 세션 (선택)"
-  echo "      허브란? 여러 프로젝트를 대신 지휘해주는 '비서' Claude 세션 — 일을 나눠 시키고 결과를 모아 보고."
-  echo "      이미 허브로 쓰는 세션이 있으면 '세션 역할'로 지정 (예: hub hub)."
-  echo "      없으면 그냥 엔터 — 나중에 'tell hub'로 추가할 수 있습니다."
-  printf "허브 지정 [엔터 = 건너뜀]: "; read -r HUB HUBR _junk
+  step "[1/2] 총괄 관리(허브) 세션 — 선택사항"
+  note "허브란? 여러 프로젝트를 대신 지휘해주는 '비서' Claude 세션 — 일을 나눠 시키고 결과를 모아 보고."
+  note "이미 허브로 쓰는 세션이 있으면 '세션 역할'로 지정 (예: hub hub). 없으면 그냥 엔터."
+  ask "허브 지정 [엔터 = 건너뜀]: "; read -r HUB HUBR _junk
   HUBR=${HUBR:-$HUB}
-  [ -z "$HUB" ] && echo "  ⤼ 건너뜀 (나중에 추가: tell hub)"
-  echo ""
-  echo "[2/2] 패널 스캔 — 각 패널(Claude)을 어떤 역할(주소)로 쓸지 정합니다."
+  [ -z "$HUB" ] && skip "건너뜀 (나중에 추가: tell hub)"
+  step "[2/2] 패널 스캔 — 각 패널(Claude)을 어떤 주소(역할)로 쓸지 정합니다"
   tmux list-panes -a -F '#{session_name}|#{pane_id}|#{pane_title}|#{pane_current_path}' | while IFS='|' read -r S P T D; do
     echo ""
-    echo "▸ 프로젝트(세션) '$S' · 패널 \"$T\" · 디렉터리 $D"
-    printf "  이 Claude의 역할 이름? [엔터=\"%s\" 유지 / 새 이름 입력 / s=건너뜀]: " "$T"; read -r ANS </dev/tty
-    [ "$ANS" = "s" ] && { echo "  ⤼ 건너뜀"; continue; }
+    echo "${C_B}▸ 프로젝트(세션) '$S' · 패널 \"$T\"${C_X}"
+    note "  디렉터리: $D"
+    ask "  이 Claude의 역할 이름? [엔터=\"$T\" 유지 / 새 이름 입력 / s=건너뜀]: "; read -r ANS </dev/tty
+    [ "$ANS" = "s" ] && { skip "건너뜀"; continue; }
     ROLE=${ANS:-$T}
     [ "$ROLE" != "$T" ] && tmux select-pane -t "$P" -T "$ROLE"
     echo "$S|$ROLE|$D" >> "$WS_CONF"
     append_role_template "$D" "$S" "$ROLE" "$HUB" "$HUBR"
-    printf "  지금 이 패널의 Claude에 규약 로드+핑퐁 메시지 보낼까? [y/N]: "; read -r GO </dev/tty
+    ok "패널 편입 완료 — ${C_B}$S · $ROLE${C_X}"
+    ask "  이 패널과 바로 연결 테스트(핑퐁)할까요? [y/N]: "; read -r GO </dev/tty
     if [ "$GO" = "y" ]; then
-      "$0" "$S" "$ROLE" "CLAUDE.md가 갱신됐어. Read로 다시 읽고 세션 협업(tell) 규약을 숙지해. 확인되면 받은 키로 tell -r 로 '퐁 정상' 한 줄만 응답해줘."
+      "$0" "$S" "$ROLE" "프로젝트 설정이 갱신됐어. CLAUDE.md를 Read로 다시 읽고 세션 협업(tell) 규칙을 숙지해. 확인되면 받은 키로 tell -r 로 '퐁 정상' 한 줄만 응답해줘."
     fi
+    note "────────────────────────────────────────"
   done
-  echo ""
-  echo "✅ 편입 완료. 설정: $WS_CONF   (확인: tell list)"
+  banner "완료"
+  ok "편입 완료 — 확인: ${C_C}tell list${C_X}"
 }
 
 cmd_hub() {
-  echo "── tell hub — 총괄 관리(허브) 세션 추가 ──"
-  echo "  허브란? 여러 프로젝트를 대신 지휘해주는 '비서' Claude 세션입니다."
-  echo "  예) 허브에게 \"서버에 API 추가하고 웹에 버튼 달아줘\" → 알아서 나눠 시키고 취합 보고."
+  banner "hub · 총괄 관리 세션 추가"
+  note "허브란? 여러 프로젝트를 대신 지휘해주는 '비서' Claude 세션입니다."
+  note "예) 허브에게 \"서버에 API 추가하고 웹에 버튼 달아줘\" → 알아서 나눠 시키고 취합 보고."
+  echo ""
   mkdir -p "$CONFIG_DIR"
   make_hub
   echo ""
-  echo "✅ 등록 완료. 다음: tell ws $HUB   (참고: 이후 init/adopt로 등록하는 프로젝트 규약에 이 허브 주소가 반영됩니다)"
+  echo "${C_B}다음:${C_X} ${C_C}tell ws $HUB${C_X}   ${C_D}(이후 init/adopt로 등록하는 프로젝트에 이 허브 주소가 연결됩니다)${C_X}"
 }
 
 cmd_list() {
-  command -v tmux >/dev/null 2>&1 || { echo "tmux 없음"; exit 1; }
+  command -v tmux >/dev/null 2>&1 || { warn "tmux 없음"; exit 1; }
   tmux ls >/dev/null 2>&1 || { echo "떠 있는 tmux 세션 없음 — 'tell ws <세션>' 으로 띄우세요"; exit 0; }
-  echo "── 주소록 — 사용법: tell <세션> <역할> \"<메시지>\" ──"
-  printf '%-16s %-16s %-6s %-8s %s\n' "세션" "역할" "규약" "실행" "디렉터리"
+  banner "list · 주소록"
+  note "사용법: tell <세션> <역할> \"<메시지>\""
+  echo ""
+  printf "${C_B}%-16s %-16s %-6s %-8s %s${C_X}\n" "세션" "역할" "연결" "실행" "디렉터리"
   tmux list-panes -a -F '#{session_name}|#{pane_title}|#{pane_current_path}|#{pane_current_command}' \
   | while IFS='|' read -r S T D C; do
       # 규약 체크: Claude Code는 상위 폴더 CLAUDE.md도 상속하므로 조상 디렉터리까지 올라가며 확인
@@ -179,36 +213,38 @@ cmd_list() {
       printf '%-16s %-16s %-6s %-8s %s\n' "$S" "$T" "$conv" "$run" "$D"
     done
   echo ""
-  echo "규약 ❌ = 그 디렉터리 CLAUDE.md에 응답 규약 없음 → 'tell adopt'로 편입하면 응답이 돌아옵니다."
+  note "연결 ❌ = 아직 브릿지에 편입 안 된 패널 → 'tell adopt'로 편입하면 응답이 돌아옵니다."
 }
 
 cmd_rm() {
   local NAME="${1:-}"
   if [ -z "$NAME" ]; then
-    echo "usage: tell rm <세션>"
-    echo "── 실행 중 세션 ──"; tmux ls 2>/dev/null || echo "(없음)"
+    banner "rm · 세션 정리"
+    echo "usage: ${C_B}tell rm <세션>${C_X}"
+    step "실행 중 세션"; tmux ls 2>/dev/null || note "(없음)"
     if [ -f "$WS_CONF" ]; then
-      echo "── 설정된 세션 ──"; grep -vE '^[[:space:]]*(#|$)' "$WS_CONF" | awk -F'|' '{print $1}' | sort -u
+      step "설정된 세션"; grep -vE '^[[:space:]]*(#|$)' "$WS_CONF" | awk -F'|' '{print $1}' | sort -u
     fi
     exit 2
   fi
+  banner "rm · '$NAME' 정리"
   local did=0
   if tmux has-session -t "=$NAME" 2>/dev/null; then
     local n; n=$(tmux list-panes -t "=$NAME" 2>/dev/null | wc -l | tr -d ' ')
-    printf "tmux 세션 '%s'(패널 %s개)를 종료할까요? 진행 중인 Claude 대화가 닫힙니다 [y/N]: " "$NAME" "$n"; read -r A
-    if [ "$A" = "y" ] || [ "$A" = "Y" ]; then tmux kill-session -t "=$NAME" && echo "  ✅ tmux 세션 종료됨"; did=1; fi
+    ask "tmux 세션 '$NAME'(패널 $n개)를 종료할까요? 진행 중인 Claude 대화가 닫힙니다 [y/N]: "; read -r A
+    if [ "$A" = "y" ] || [ "$A" = "Y" ]; then tmux kill-session -t "=$NAME" && ok "tmux 세션 종료됨"; did=1; fi
   else
-    echo "  ℹ️ 실행 중인 tmux 세션 '$NAME' 없음"
+    note "실행 중인 tmux 세션 '$NAME' 없음"
   fi
   if [ -f "$WS_CONF" ] && LC_ALL=C awk -F'|' -v s="$NAME" '$1==s{found=1} END{exit !found}' "$WS_CONF"; then
-    printf "설정(workspaces.conf)의 '%s' 항목도 제거할까요? [y/N]: " "$NAME"; read -r B
+    ask "설정에서도 '$NAME' 항목을 제거할까요? [y/N]: "; read -r B
     if [ "$B" = "y" ] || [ "$B" = "Y" ]; then
       cp "$WS_CONF" "$WS_CONF.bak"
       LC_ALL=C awk -F'|' -v s="$NAME" '$1!=s' "$WS_CONF.bak" > "$WS_CONF"
-      echo "  ✅ 설정에서 제거됨 (백업: $WS_CONF.bak)"; did=1
+      ok "설정에서 제거됨 ${C_D}(백업: $WS_CONF.bak)${C_X}"; did=1
     fi
   fi
-  [ "$did" = "0" ] && echo "  (변경 없음)"
+  [ "$did" = "0" ] && note "(변경 없음)"
   return 0
 }
 
