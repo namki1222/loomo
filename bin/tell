@@ -13,6 +13,7 @@
 #   tell list                            주소록 — 말 걸 수 있는 세션:역할 + 규약 여부
 #   tell rm <세션>                       세션 정리 — tmux 종료 + 설정에서 제거 (각각 확인)
 #   tell doctor                          환경 점검
+#   tell completion                      셸 자동완성 스크립트 — .zshrc에 eval "$(tell completion)"
 #
 # 동작 원리:
 #   - 대상 = tmux "세션 이름" + "패널 제목(=역할)". 메시지는 send-keys로 상대 입력창에 직접 입력됨.
@@ -136,7 +137,8 @@ make_hub() { # 허브 세션 등록 + 허브 CLAUDE.md 생성. 성공 시 HUB/HU
     return 1
   fi
   ask "  허브 이름 [hub]: "; read -r HUB; HUB=${HUB:-hub}; HUBR="$HUB"
-  ask "  허브 작업 디렉터리 [~/tell-hub]: "; read -r HUBD; HUBD=$(abspath "${HUBD:-$HOME/tell-hub}")
+  # read -e: 경로 입력 중 탭(파일명) 완성
+  ask "  허브 작업 디렉터리 [~/tell-hub]: "; read -e -r HUBD; HUBD=$(abspath "${HUBD:-$HOME/tell-hub}")
   ask_resume_id "$HUBD"
   echo "$HUB|$HUBR|$HUBD|$RID" >> "$WS_CONF"; mkdir -p "$HUBD"
   echo "$HUB|$HUBR" > "$HUB_FILE"
@@ -176,7 +178,7 @@ cmd_init() {
       echo ""
       note "· 패널 = 이 프로젝트에 상주할 Claude 하나 (예: 서버 / 웹 / 앱)"
       ask "  추가할 패널(역할) 이름 (빈 값 = 이 프로젝트 완료): "; read -r R; [ -z "$R" ] && break
-      ask "  '$R' 담당 디렉터리: "; read -r D; D=$(abspath "$D")
+      ask "  '$R' 담당 디렉터리: "; read -e -r D; D=$(abspath "$D")
       [ -z "$D" ] && { warn "디렉터리는 필수"; continue; }
       ask_resume_id "$D"
       echo "$S|$R|$D|$RID" >> "$WS_CONF"
@@ -254,11 +256,11 @@ cmd_adopt() {
         ok "담당 디렉터리 자동 감지: $D"
       else
         warn "세션ID '$RID'의 대화 기록을 못 찾음 — ID를 확인하거나 디렉터리를 직접 입력하세요"
-        ask "  담당 디렉터리: "; read -r D; D=$(abspath "$D")
+        ask "  담당 디렉터리: "; read -e -r D; D=$(abspath "$D")
         [ -z "$D" ] && { warn "디렉터리는 필수"; continue; }
       fi
     else
-      ask "  담당 디렉터리(그 대화를 쓰던 곳): "; read -r D; D=$(abspath "$D")
+      ask "  담당 디렉터리(그 대화를 쓰던 곳): "; read -e -r D; D=$(abspath "$D")
       [ -z "$D" ] && { warn "디렉터리는 필수"; continue; }
       ask_resume_id "$D"
       [ -z "$RID" ] && note "(이어받을 대화 없음 — 새 대화로 등록)"
@@ -362,6 +364,49 @@ ws_boot() { # $1=세션 — 설정대로 부트스트랩(패널 분할·제목·
   return 0
 }
 
+cmd_completion() { # 셸 자동완성 스크립트 출력 — .zshrc/.bashrc에: eval "$(tell completion)"
+  cat <<'EOS'
+# claude-tell-bridge 자동완성 (bash/zsh) — eval "$(tell completion)"
+if [ -n "${ZSH_VERSION:-}" ]; then
+  autoload -U +X compinit bashcompinit
+  whence -w compdef >/dev/null 2>&1 || compinit -u 2>/dev/null
+  bashcompinit
+fi
+_tell_conf() { printf '%s' "${TELL_CONFIG_DIR:-$HOME/.config/claude-tell-bridge}/workspaces.conf"; }
+_tell_sessions() {
+  local conf; conf=$(_tell_conf)
+  { tmux list-sessions -F '#{session_name}' 2>/dev/null
+    [ -f "$conf" ] && grep -vE '^[[:space:]]*(#|$)' "$conf" | cut -d'|' -f1
+  } | sort -u
+}
+_tell_roles() { # $1=세션 — 떠 있는 패널 제목 + 설정된 역할
+  local conf; conf=$(_tell_conf)
+  { tmux list-panes -t "=$1" -F '#{pane_title}' 2>/dev/null
+    [ -f "$conf" ] && LC_ALL=C awk -F'|' -v s="$1" '$1==s{print $2}' "$conf"
+  } | sort -u
+}
+_tell() {
+  local cur="${COMP_WORDS[COMP_CWORD]}" idx=1
+  [ "${COMP_WORDS[1]:-}" = "-r" ] && idx=3   # -r <KEY> 만큼 위치가 밀림
+  local pos=$((COMP_CWORD - idx + 1)) first="${COMP_WORDS[$idx]:-}"
+  COMPREPLY=()
+  if [ "$pos" -eq 1 ]; then
+    COMPREPLY=($(compgen -W "$(_tell_sessions) init adopt hub up ws list rm doctor completion -r" -- "$cur"))
+  elif [ "$pos" -eq 2 ]; then
+    case "$first" in
+      ws|rm) COMPREPLY=($(compgen -W "$(_tell_sessions)" -- "$cur")) ;;
+      init|adopt|hub|up|list|doctor|completion|-r) ;;
+      *) COMPREPLY=($(compgen -W "$(_tell_roles "$first")" -- "$cur")) ;;
+    esac
+  fi
+}
+complete -F _tell tell
+EOS
+  # 터미널에서 직접 실행했을 때만 적용법 안내 (eval로 캡처될 땐 stdout이 tty가 아니므로 침묵)
+  [ -t 1 ] && echo "# 적용: echo 'eval \"\$(tell completion)\"' >> ~/.zshrc  (bash는 ~/.bashrc)" >&2
+  return 0
+}
+
 cmd_ws() {
   local NAME="${1:-}"
   if [ ! -f "$WS_CONF" ]; then echo "설정 없음: $WS_CONF — 'tell init' 먼저"; exit 1; fi
@@ -405,6 +450,7 @@ case "${1:-}" in
   adopt)  shift; cmd_adopt "$@";  exit $? ;;
   hub)    shift; cmd_hub "$@";    exit $? ;;
   up)     shift; cmd_up;          exit $? ;;
+  completion) shift; cmd_completion; exit $? ;;
   list)   shift; cmd_list;        exit $? ;;
   rm)     shift; cmd_rm "${1:-}"; exit $? ;;
   ws)     shift; cmd_ws "${1:-}"; exit $? ;;
@@ -423,7 +469,7 @@ fi
 
 SESSION="${1:-}"; ROLE="${2:-}"; shift 2 2>/dev/null; MSG="$*"
 if [ -z "$SESSION" ] || [ -z "$ROLE" ] || [ -z "$MSG" ]; then
-  echo "usage: tell [-r <KEY>] <세션> <역할> <메시지>   |   tell init|adopt|hub|up|list|rm|ws|doctor"; exit 2
+  echo "usage: tell [-r <KEY>] <세션> <역할> <메시지>   |   tell init|adopt|hub|up|list|rm|ws|doctor|completion"; exit 2
 fi
 
 # LC_ALL=C: macOS awk가 일부 로케일에서 비ASCII 문자열 == 비교를 깨뜨리는 버그 회피(바이트 단위 비교)

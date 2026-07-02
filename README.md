@@ -92,6 +92,12 @@ npm install -g claude-tell-bridge
 tell doctor        # 환경 점검
 ```
 
+탭 자동완성(선택) — `tell <TAB>`이 세션·역할·서브커맨드를 완성해준다:
+
+```bash
+echo 'eval "$(tell completion)"' >> ~/.zshrc    # bash는 ~/.bashrc
+```
+
 `tell doctor` 출력 예:
 
 ```
@@ -280,7 +286,10 @@ blog|server|~/work/blog/api
 | `tell hub` | 총괄 관리(허브=비서) 세션 등록 — **허브는 하나만**, 이미 있으면 거절 |
 | `tell list` | **주소록** — 말 걸 수 있는 세션:역할 목록 + 규약/실행 여부 |
 | `tell rm <세션>` | 세션 정리 — 세션 종료 + 설정에서 제거 (각각 y/N 확인) |
-| `tell doctor` | 환경 점검 (tmux/claude/설정/템플릿) |
+| `tell doctor` | 환경 점검 (tmux/claude/설정/허브/템플릿) |
+| `tell completion` | 셸 자동완성 스크립트 — `.zshrc`에 `eval "$(tell completion)"` 한 줄. `tell <TAB>`=세션/서브커맨드, `tell <세션> <TAB>`=역할 |
+
+마법사(`init`/`adopt`/`hub`)의 **디렉터리 입력에서도 탭 완성**이 된다.
 
 종료코드: `0` 전송 성공 · `1` 대상 패널 없음 · `2` 인자 오류
 
