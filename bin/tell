@@ -6,7 +6,7 @@
 #   tell -r <KEY> <세션> <역할> "<메시지>"  응답 전송 (받은 요청의 KEY 그대로)
 # 관리:
 #   tell ws [<세션>]                     워크스페이스 부트스트랩/접속 (설정: workspaces.conf)
-#   tell up                              설정된 허브·프로젝트 세션 전부 켜기 → 허브로 접속
+#   tell up [--tabs]                     설정된 허브·프로젝트 세션 전부 켜기 → 허브로 접속 (--tabs: 세션별 터미널 탭)
 #   tell init                            셋업 마법사 — 허브(선택) → 프로젝트/역할/디렉터리
 #   tell adopt                           쓰던 Claude 가져오기 — 떠 있는 패널 편입 + 기존 대화(세션ID) 이어받기
 #   tell hub                             총괄 관리(허브) 세션 등록 (허브는 시스템 전체에 하나만)
@@ -92,7 +92,7 @@ cmd_help() {
   row "hub"        "총괄 관리(허브=비서) 세션 등록 — 시스템 전체에 하나만"
   echo ""
   echo "${C_Y}${C_B}운영${C_X}"
-  row "up"         "설정된 허브·프로젝트 세션 전부 켜기 → 허브로 접속"
+  row "up"         "설정된 허브·프로젝트 세션 전부 켜기 → 허브로 접속 (--tabs: 세션별 터미널 탭)"
   row "ws"         "세션 하나 띄우기/접속 — tell ws <세션> (인자 없으면 목록)"
   row "list"       "주소록 — 지금 말 걸 수 있는 세션:역할 + 연결·실행 상태"
   row "rm"         "세션 정리 — tell rm <세션> (종료 + 설정 제거, 각각 확인)"
@@ -434,7 +434,8 @@ _tell() {
   elif [ "$pos" -eq 2 ]; then
     case "$first" in
       ws|rm) COMPREPLY=($(compgen -W "$(_tell_sessions)" -- "$cur")) ;;
-      init|adopt|hub|up|list|doctor|completion|help|-r) ;;
+      up) COMPREPLY=($(compgen -W "--tabs" -- "$cur")) ;;
+      init|adopt|hub|list|doctor|completion|help|-r) ;;
       *) COMPREPLY=($(compgen -W "$(_tell_roles "$first")" -- "$cur")) ;;
     esac
   fi
@@ -459,7 +460,36 @@ cmd_ws() {
   if [ -n "${TMUX:-}" ]; then tmux switch-client -t "=$NAME"; else tmux attach -t "=$NAME"; fi
 }
 
-cmd_up() { # 설정된 허브·프로젝트 세션 전부 켜기 → 허브(있으면)로 접속
+open_terminal_tab() { # $1=세션 — macOS 터미널 앱에 그 세션으로 접속하는 탭/창을 연다
+  # 작은따옴표: AppleScript 문자열(큰따옴표)과 충돌하지 않게
+  local cmd="tmux attach -t '=$1'"
+  [ "$(uname)" = "Darwin" ] || { warn "--tabs 는 macOS에서만 지원"; return 1; }
+  if [ "${TERM_PROGRAM:-}" = "iTerm.app" ] || osascript -e 'application "iTerm2" is running' 2>/dev/null | grep -q true; then
+    osascript >/dev/null <<EOF
+tell application "iTerm2"
+  activate
+  if (count of windows) = 0 then
+    create window with default profile
+  else
+    tell current window to create tab with default profile
+  end if
+  tell current session of current window to write text "$cmd"
+end tell
+EOF
+  else
+    # Terminal.app: 탭 생성은 접근성 권한이 필요해서 권한 없이 되는 '새 창' 방식 사용
+    osascript >/dev/null <<EOF
+tell application "Terminal"
+  activate
+  do script "$cmd"
+end tell
+EOF
+  fi
+}
+
+cmd_up() { # 설정된 허브·프로젝트 세션 전부 켜기 → 허브(있으면)로 접속 / --tabs: 세션별 터미널 탭
+  local TABS=0
+  case "${1:-}" in -t|--tabs) TABS=1 ;; esac
   if [ ! -f "$WS_CONF" ]; then echo "설정 없음: $WS_CONF — 'tell init' 먼저"; exit 1; fi
   banner "up · 전체 켜기"
   local NAMES; NAMES=$(grep -vE '^[[:space:]]*(#|$)' "$WS_CONF" | awk -F'|' '{print $1}' | awk '!seen[$0]++')
@@ -480,6 +510,17 @@ EOF
   get_hub && tmux has-session -t "=$HUB" 2>/dev/null && TARGET="$HUB"
   [ -z "$TARGET" ] && TARGET=$(printf '%s\n' "$NAMES" | head -1)
   echo ""
+  if [ "$TABS" = "1" ]; then # 세션마다 터미널 탭 — 허브는 마지막(=포커스)에
+    while IFS= read -r S; do
+      [ "$S" = "$TARGET" ] && continue
+      tmux has-session -t "=$S" 2>/dev/null || continue
+      open_terminal_tab "$S" && ok "탭 열림: $S"
+    done <<EOF
+$NAMES
+EOF
+    open_terminal_tab "$TARGET" && { if [ "$TARGET" = "${HUB:-}" ]; then ok "탭 열림: $TARGET (허브·포커스)"; else ok "탭 열림: $TARGET (포커스)"; fi; }
+    exit 0
+  fi
   if [ "$TARGET" = "${HUB:-}" ]; then ok "접속: $TARGET (허브)"; else ok "접속: $TARGET"; fi
   if [ -n "${TMUX:-}" ]; then tmux switch-client -t "=$TARGET"; else tmux attach -t "=$TARGET"; fi
 }
@@ -488,7 +529,7 @@ case "${1:-}" in
   init)   shift; cmd_init "$@";   exit $? ;;
   adopt)  shift; cmd_adopt "$@";  exit $? ;;
   hub)    shift; cmd_hub "$@";    exit $? ;;
-  up)     shift; cmd_up;          exit $? ;;
+  up)     shift; cmd_up "$@";     exit $? ;;
   completion) shift; cmd_completion; exit $? ;;
   help|--help|-h) cmd_help;       exit 0 ;;
   "")     cmd_help;               exit 2 ;;   # 인자 없이 실행 → 도움말
