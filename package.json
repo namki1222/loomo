@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Session-to-session messaging bridge for Claude Code over tmux — correlation-keyed async requests/replies between long-lived AI agent panes",
   "bin": {
-    "tell": "./bin/tell"
+    "tell": "bin/tell"
   },
   "files": [
     "bin",
@@ -30,7 +30,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/namki1222/claude-tell-bridge.git"
+    "url": "git+https://github.com/namki1222/claude-tell-bridge.git"
   },
   "scripts": {
     "test": "bash -n bin/tell && echo syntax-ok"
