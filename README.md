@@ -21,13 +21,21 @@ Run one Claude Code session for your backend and another for your frontend, and 
 **claude-tell-bridge tears down that wall.** Your sessions become teammates that message each other directly — the backend finishes a change and tells the frontend itself, then the frontend does its part and reports back. You just talk to them in plain language; they coordinate on their own.
 
 ```
-Without the bridge                    With the bridge
-─────────────────                     ───────────────
-[backend]  done, API changed          [backend] ──"API changed, update the UI"──► [frontend]
-    │                                                                                  │
-    │  ✋ you copy                                          [backend] ◄──"done ✅"──────┘
-    ▼
-[frontend]  paste it here...          you: one sentence, they handle the rest
+Without it — you're the relay:
+
+  [backend]  "done, API changed"
+      │
+      │  ✋ copy & paste
+      ▼
+  [frontend]  "...paste it here"
+
+With it — they loop on their own:
+
+       ┌──"API changed, update the UI"──►┐
+  [backend]                          [frontend]
+       └◄──────────"done ✅"─────────────┘
+
+  you: one sentence, they handle the rest
 ```
 
 Each session is **long-lived** — a resident teammate that keeps its own project's history and context, not a throwaway agent that forgets everything between tasks.
