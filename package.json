@@ -9,6 +9,8 @@
     "bin",
     "templates",
     "README.md",
+    "README.ko.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "os": [

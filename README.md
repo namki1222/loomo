@@ -2,398 +2,294 @@
 
 # claude-tell-bridge
 
-**여러 Claude Code 세션을 한 화면에 띄우고, 세션끼리 대화하게 하라.**
+**Let your Claude Code sessions talk to each other.**
 
 [![npm](https://img.shields.io/npm/v/claude-tell-bridge?style=flat-square)](https://www.npmjs.com/package/claude-tell-bridge)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
-[![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555?style=flat-square)](#환경-요구사항)
+[![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555?style=flat-square)](#requirements)
 
-데몬 없음 · DB 없음 · MCP 없음 — **bash 스크립트 1개 + CLAUDE.md 규약**이 전부.
+English · [한국어](README.ko.md) · [中文](README.zh-CN.md)
+
+No daemon · no database · no MCP — just one bash script and a convention.
 
 </div>
 
 ---
 
-백엔드용 Claude Code 세션 하나, 프론트엔드용 세션 하나를 띄워놓고 일해본 적 있다면 알 것이다 — 백엔드가 API를 바꾸면 그 결과를 **사람이 복사해서** 프론트 세션에 붙여넣어야 한다. 이 도구는 그 복붙을 없앤다. 한 세션이 `tell`로 **보내면**, 상대 세션이 **자기 입력창으로 직접 받는다.** 받은 세션은 작업을 마치고 `tell -r`로 **스스로 응답한다.**
+Run one Claude Code session for your backend and another for your frontend, and you hit a wall fast: the two can't see each other. When the backend changes an API, **you** have to copy the result and paste it into the frontend session by hand. Every hand-off is a manual relay.
+
+**claude-tell-bridge tears down that wall.** Your sessions become teammates that message each other directly — the backend finishes a change and tells the frontend itself, then the frontend does its part and reports back. You just talk to them in plain language; they coordinate on their own.
 
 ```
-┌─ 한 화면 = 한 팀 ───────────────────────────────────────────────┐
-│ [proj-a:server]                     [proj-a:web]               │
-│  FastAPI 담당 Claude                 React 담당 Claude          │
-│     │ tell proj-a web "응답에 pagination 메타 추가했어.          │
-│     │  GET /orders 스키마 바뀜 — 프론트 반영해줘" ──► KEY=a1b2c3 │
-│     ◄── tell -r a1b2c3 proj-a server "반영 완료: ..." ──────────│
-└────────────────────────────────────────────────────────────────┘
+Without the bridge                    With the bridge
+─────────────────                     ───────────────
+[backend]  done, API changed          [backend] ──"API changed, update the UI"──► [frontend]
+    │                                                                                  │
+    │  ✋ you copy                                          [backend] ◄──"done ✅"──────┘
+    ▼
+[frontend]  paste it here...          you: one sentence, they handle the rest
 ```
 
-> 처음이라면 위에서부터 순서대로 읽으면 된다. 모든 명령이 포함되어 있고, 내부 원리를 몰라도 쓸 수 있다.
+Each session is **long-lived** — a resident teammate that keeps its own project's history and context, not a throwaway agent that forgets everything between tasks.
 
-## 목차
+## Table of contents
 
-- [어떻게 상상하면 되나](#어떻게-상상하면-되나)
-- [왜 이 방식인가](#왜-이-방식인가)
-- [환경 요구사항](#환경-요구사항)
-- [설치](#설치)
-- [빠른 시작 A — 처음부터 (`tell init`)](#빠른-시작-a--처음부터-tell-init)
-- [빠른 시작 B — 이미 쓰던 세션 편입 (`tell adopt`)](#빠른-시작-b--이미-쓰던-세션-편입-tell-adopt)
-- [메시지 주고받기 — 자세히](#메시지-주고받기--자세히)
-- [규약(CLAUDE.md) — 브릿지의 나머지 절반](#규약claudemd--브릿지의-나머지-절반)
-- [권장 패턴: 허브(비서) 세션 + 폰 원격](#권장-패턴-허브비서-세션--폰-원격)
-- [여러 프로젝트 동시 운용](#여러-프로젝트-동시-운용)
-- [라이프사이클](#라이프사이클)
-- [명령어 레퍼런스](#명령어-레퍼런스)
-- [설정 파일](#설정-파일)
-- [트러블슈팅](#트러블슈팅)
+- [What you get](#what-you-get)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Quick start — from scratch](#quick-start--from-scratch)
+- [Quick start — adopt sessions you already have](#quick-start--adopt-sessions-you-already-have)
+- [The hub: run everything from one seat (and your phone)](#the-hub-run-everything-from-one-seat-and-your-phone)
+- [Lifecycle](#lifecycle)
+- [Command reference](#command-reference)
+- [Config file](#config-file)
+- [Troubleshooting](#troubleshooting)
 - [FAQ](#faq)
-- [보안](#보안)
-- [알려진 제약 · 로드맵](#알려진-제약--로드맵)
+- [Security](#security)
+- [How it works (under the hood)](#how-it-works-under-the-hood)
+- [Limitations & roadmap](#limitations--roadmap)
+- [License](#license)
 
 ---
 
-## 어떻게 상상하면 되나
+## What you get
 
-개념은 세 가지뿐이다:
+Three ideas, that's the whole model:
 
-- **세션 = 프로젝트 팀.** 세션 하나가 프로젝트 하나다 (`proj-a`, `blog`, …).
-- **패널 = 그 팀에 상주하는 AI 동료.** 패널 이름이 곧 역할이자 주소다 (`server`, `web`, `infra`). 각 패널에서 Claude Code가 **장수명으로** 돌아간다 — 스폰됐다 사라지는 서브에이전트가 아니라, 그 코드베이스의 이력과 맥락을 계속 들고 있는 담당자다.
-- **`tell` = 그 동료에게 말 걸기.** `tell <세션> <역할> "<메시지>"` 하면 상대 패널의 입력창에 메시지가 직접 타이핑된다. 6자리 상관키(KEY)가 붙어서, 나중에 어떤 요청에 대한 응답인지 매칭된다. **이 메시징 명령을 실행하는 건 주로 Claude들이다** — 사람은 아무 패널의 Claude에게 자연어로 부탁하면 되고("web한테 스키마 바뀐 거 알려줘"), 직접 관리하는 건 `init`/`up`/`down`/`rm` 같은 관리 명령뿐이다.
+- **A session is a project team.** One session = one project (`shop`, `blog`, …).
+- **A pane is a resident AI teammate.** Its name is its role and its address (`server`, `web`, `infra`). A long-lived Claude Code runs in each pane, holding that codebase's history — not a subagent that spawns and vanishes.
+- **They talk to each other.** Ask any pane's Claude in plain language ("tell web the schema changed"), and it relays to the right teammate, who does the work and replies. You never type a messaging command yourself — the sessions handle it.
 
 ```
-세션 "proj-a"  패널 "server"  ┐
-세션 "proj-a"  패널 "web"     ├── 같은 팀 — tell로 서로 대화
-세션 "proj-a"  패널 "infra"   ┘
+session "shop"  pane "server"  ┐
+session "shop"  pane "web"     ├── same team — they talk to each other
+session "shop"  pane "infra"   ┘
 
-세션 "blog"    패널 "server"  ─── 다른 팀 — 주소가 다르니 섞이지 않음
+session "blog"  pane "server"  ─── different team — separate address, never crosses over
 ```
 
-"연결" 버튼 같은 건 없다. **세션이 떠 있다는 것 자체가 연결이다.**
+There's no "connect" button. **A session being up is the connection.**
 
-## 왜 이 방식인가
+**Why this way?**
 
-- **컨텍스트 주인에게 물어본다** — 신선한 에이전트가 추측하는 게 아니라, 그 프로젝트에 *상주*하는 세션이 자기 코드·환경을 직접 확인하고 답한다. ("너네 nginx 어떻게 세팅했어?" → 상대가 자기 서버의 실제 conf를 열어보고 답한다.)
-- **장수명 컨텍스트** — 각 패널은 프로젝트 이력·메모리·CLAUDE.md를 계속 유지한다. 매번 재설명(온보딩) 비용이 없다.
-- **화면 분할 = 팀 관제탑** — `tell ws` 한 번으로 역할별 패널 배치가 재현된다. 모든 AI 동료가 일하는 걸 한 화면에서 보면서, 아무 패널이나 클릭해 **직접** 지시할 수도 있다.
-- **비동기 논블로킹** — 상관키로 여러 요청을 동시에 추적한다. 보낸 쪽은 기다리지 않고 다음 일을 한다. 응답은 나중에 새 메시지로 들어온다.
-- **유리箱 오케스트레이션** — 모든 대화가 화면에 그대로 보인다. 블랙박스 없음. 언제든 사람이 끼어들 수 있다.
-- **인프라 제로** — 상대 입력창에 직접 타이핑하는 게 전부다. 데몬·큐·MCP 서버·훅 설정이 없다. 전체 코드가 bash 한 파일이라 5분이면 다 읽힌다.
+- **Ask the owner, not a guesser.** A resident session answers from its own code and environment ("how's your nginx set up?" → it opens the actual conf and tells you), instead of a fresh agent guessing.
+- **No re-onboarding.** Each pane keeps its project history, memory, and context across tasks.
+- **One screen = a control tower.** Every teammate works in view; click any pane to steer it directly.
+- **Async and non-blocking.** Requests are tracked by key, so the sender moves on and answers arrive later as new messages.
+- **Glass-box.** Every exchange is visible on screen. No hidden bus — you can step in anytime.
+- **Zero infrastructure.** No daemon, no queue, no MCP server, no hooks. The whole thing is one bash file.
 
-## 환경 요구사항
+## Requirements
 
-| 필요한 것 | 확인 명령 | 비고 |
+| Need | Check | Notes |
 |---|---|---|
-| **tmux** | `tmux -V` | 3.x 권장. `brew install tmux` |
-| **Claude Code** | `claude --version` | 받는 쪽에서 응답을 만들 AI |
-| **Node.js / npm** | `npm -v` | 설치 채널로만 사용 (런타임은 순수 bash) |
-| macOS 또는 Linux | — | Windows는 WSL에서 동작 예상 (미검증) |
+| **tmux** | `tmux -V` | 3.x recommended. `brew install tmux` |
+| **Claude Code** | `claude --version` | the AI that does the work in each pane |
+| **Node.js / npm** | `npm -v` | install channel only (runtime is pure bash) |
+| macOS or Linux | — | Windows expected to work under WSL (untested) |
 
-## 설치
+## Install
 
 ```bash
 npm install -g claude-tell-bridge
-tell doctor        # 환경 점검
+tell doctor        # environment check
 ```
 
-탭 자동완성(선택) — `tell <TAB>`이 세션·역할·서브커맨드를 완성해준다:
+Optional tab-completion for the management commands:
 
 ```bash
-echo 'eval "$(tell completion)"' >> ~/.zshrc    # bash는 ~/.bashrc
+echo 'eval "$(tell completion)"' >> ~/.zshrc    # use ~/.bashrc for bash
 ```
 
-`tell doctor` 출력 예:
+## Quick start — from scratch
 
-```
-── tell doctor ──
-✅ tmux 3.6b
-✅ claude 2.1.198
-✅ tmux 세션 안에서 실행 중 (발신자 헤더 자동)
-ℹ️  워크스페이스 설정 없음 — 'tell init' 또는 'tell adopt'로 생성
-✅ 템플릿: …/claude-tell-bridge/templates
-```
+Setting up Claude Code in this shape for the first time? You'll have two Claudes talking to each other in about 5 minutes.
 
----
+> 🐣 **New to tmux?** The [beginner's guide](docs/getting-started.md) walks you through prerequisites, basic tmux moves, and the first exchange with copy-paste steps. What's below is the condensed version.
 
-## 빠른 시작 A — 처음부터 (`tell init`)
-
-Claude Code를 이 구조로 처음 세팅한다면 이 경로다. **5분 안에 두 Claude가 서로 핑퐁하는 것까지 간다.**
-
-> 🐣 **tmux가 처음이라면** — 준비물 설치부터 tmux 기본 조작, 핑퐁 확인까지 복붙으로 따라가는 [초보자용 상세 가이드](docs/getting-started.md)를 보세요. 아래는 그 압축판입니다.
-
-**1. 생성 — 워크스페이스 등록 (`tell init`)**
+**1. Create — register your workspace**
 
 ```bash
 tell init
 ```
 
-> `init`은 **생성(등록)까지만** 한다 — 설정 파일에 기록하고 각 디렉터리에 규약을 심을 뿐, **아직 아무 세션도 실행되지 않는다.** 실행은 2번(`tell up`)에서.
+> `init` only **registers**. It writes your config and plants the convention in each directory — **nothing runs yet.** Starting sessions is step 2.
 
-질문 순서 (각 질문에 설명이 함께 출력된다):
+The wizard asks, in order:
 
-1. **[1/2] 총괄 관리(허브) 세션이 필요한가?** — "여러 프로젝트를 대신 지휘해주는 비서 세션"인데, **몰라도 되고 없어도 된다.** 처음엔 엔터(건너뜀)로 시작하자 — 나중에 `tell hub` 한 번으로 추가된다.
-2. **[2/2] 프로젝트 등록** — 순서대로: **프로젝트 이름(=세션 이름)** → **이 Claude의 역할(=패널 이름)** → **담당 디렉터리**. 역할은 여러 개 등록 가능. 예:
-   - 프로젝트 `demo` → 역할 `api` → `~/work/demo/api` → 역할 `web` → `~/work/demo/web` → 엔터 → 엔터
-3. 이때 **각 디렉터리의 CLAUDE.md에 협업 규약이 자동 삽입**된다 — 받는 쪽 Claude가 "어떻게 응답해야 하는지"를 아는 근거다.
+1. **A hub (manager) session?** — a "secretary" Claude that directs multiple projects for you. Optional and skippable; just press Enter to skip and add one later with `tell hub`.
+2. **Register a project** — in order: **project name (= session name)** → **this Claude's role (= pane name)** → **directory**. Multiple roles per project. Example: project `demo` → role `api` → `~/work/demo/api` → role `web` → `~/work/demo/web` → Enter → Enter.
 
-**2. 실행 — 세션 켜기 (`tell up`)**
+Registering also **inserts the collaboration convention into each directory's CLAUDE.md** — that's what tells the receiving Claude how to reply.
+
+**2. Run — start the sessions**
 
 ```bash
-tell up            # 등록된 세션 전부 켜기 — 패널 분할 + claude 자동 실행, 허브 있으면 허브로 접속
-tell list          # 주소록 — 지금 말 걸 수 있는 세션:역할과 규약 여부 확인
+tell up            # start every registered session (split panes + launch claude), attach to the hub if you have one
+tell list          # address book — who you can talk to right now
 ```
 
-하나만 켜고 싶으면 `tell ws demo` (켜고 바로 접속). 이 생성/실행 분리 덕에, 재부팅 후에도 `tell up` 한 번이면 팀 전체가 그대로 복원된다.
+To start just one: `tell ws demo` (starts it and attaches). Because create and run are separate, one `tell up` restores your whole team after a reboot.
 
-**3. 첫 핑퐁 (P2P)** — `api` 패널의 Claude에게 그냥 말로 부탁한다:
-
-```
-web한테 핑퐁 테스트 보내고 응답 오는지 확인해줘
-```
-
-`tell` 명령을 직접 칠 필요 없다 — 자동 삽입된 규약 덕에 `api`의 Claude가 스스로 `tell demo web "..."`을 실행한다. 몇 초 뒤 `api` 패널 입력창에 이렇게 돌아오면 성공이다:
+**3. First exchange** — just ask the `api` pane's Claude in plain language:
 
 ```
-[세션 응답 - 3f9a1c from demo/web] 퐁 정상
+send a ping to web and check that it replies
 ```
 
-이 순간부터 두 세션은 서로에게 일을 시킬 수 있다 — 이게 이 도구의 코어다.
+You don't type any messaging command — the convention makes `api`'s Claude do it. A few seconds later a reply lands in the `api` pane. From this moment on, your sessions can hand work to each other — that's the whole point.
 
-## 빠른 시작 B — 이미 쓰던 세션 편입 (`tell adopt`)
+## Quick start — adopt sessions you already have
 
-**이미 쓰던 Claude Code 세션이 있다면** — 재시작 없이, 대화 컨텍스트를 유지한 채 그대로 편입된다.
+**Already running Claude Code sessions?** Adopt them in place — no restart, conversation context preserved.
 
 ```bash
 tell adopt
 ```
 
-`adopt`는 두 가지 경우를 모두 처리한다:
+`adopt` handles two cases:
 
-**① 떠 있는 패널 편입** — 분할 화면 안에서 이미 돌아가던 Claude:
+**① Adopt live panes** — Claudes already running in your split screen: it scans every pane, lets you name each one's role, inserts the convention into that directory's CLAUDE.md (skips if already there), and can send a "read the convention + ping" message on the spot so it loads and verifies without a restart.
 
-1. 떠 있는 패널을 전부 스캔해서 하나씩 보여준다
-2. 각 패널의 **역할 이름**을 정한다 (엔터 = 현재 패널 제목 유지 / 새 이름 입력 / `s` = 건너뜀)
-3. 그 패널의 프로젝트 디렉터리 CLAUDE.md에 **협업 규약을 삽입**한다 (이미 있으면 자동 건너뜀)
-4. 원하면 그 자리에서 떠 있는 Claude에게 **"규약 읽어 + 핑퐁" 메시지를 자동 전송**한다 — 재시작 없이 규약이 로드되고, 곧바로 검증까지 끝난다
+**② Bring in a conversation you were having** — a Claude from a plain terminal tab: give it the conversation's session ID (its directory is auto-detected from the conversation log) — or, if you don't know the ID, give the directory and pick from the recent conversations it lists. Once registered, `tell ws <project>` brings that pane up with `claude --resume` so it **continues the exact conversation** instead of starting fresh.
 
-**② 쓰던 대화 가져오기** — 일반 터미널 탭에서 쓰던 Claude:
+## The hub: run everything from one seat (and your phone)
 
-1. 대화의 **세션ID만 입력하면 끝** — 담당 디렉터리는 대화 기록에서 자동 감지된다 (세션ID는 그 대화에서 `/status`로 확인)
-2. ID를 모르면 디렉터리를 입력 — 그곳에서 쓰던 **최근 대화 목록**을 보여주니 골라잡으면 된다
-3. 등록 후 `tell ws <프로젝트>` 로 띄우면, 그 패널은 새 대화가 아니라 `claude --resume`으로 **기존 대화를 그대로 이어받아** 뜬다 (규약도 함께 삽입됨)
+A **hub** is a "secretary" Claude session that directs your other projects. It doesn't write code — it takes your request, delegates it to the right session, tracks the replies, and reports back.
 
----
+> Tell the hub *"add a refund API on the server and a button on the web"*, and it dispatches to both, then reports **"✅ server: done / ✅ web: done"** once each replies.
 
-## 메시지 주고받기 — 자세히
-
-> 이 섹션의 명령은 **에이전트(Claude)가 실행하는 것**이다. 규약(CLAUDE.md)이 시키는 대로 각 패널의 Claude가 스스로 `tell`을 친다 — 사람이 직접 칠 수도 있지만, 보통은 Claude에게 자연어로 부탁하는 걸로 충분하다. 내부 동작을 알고 싶을 때 읽으면 된다.
-
-### 요청
-
-```bash
-tell proj-a server "결제 API에 환불 엔드포인트 추가해줘. 끝나면 받은 키로 응답해줘"
-```
+Peer-to-peer is the core, but with several projects one hub is worth it (create it in `tell init`, or add it later with `tell hub`):
 
 ```
-[tell] 요청 전송 완료 → proj-a:server (%12)
-[tell] 요청 KEY=a1b2c3  ← 이 KEY의 [세션 응답 - a1b2c3] 를 기다리세요
-```
-
-상대 패널 입력창에는 이렇게 찍힌다:
-
-```
-[세션 요청 - a1b2c3 from hub/hub] 결제 API에 환불 엔드포인트 추가해줘. 끝나면 받은 키로 응답해줘
-```
-
-헤더를 해부하면:
-
-| 부분 | 의미 |
-|---|---|
-| `세션 요청` | 이것은 다른 세션이 보낸 **요청**이다 (사람 입력과 구분) |
-| `a1b2c3` | 상관키(KEY) — 응답이 돌아올 때 어느 요청인지 매칭하는 열쇠 |
-| `from hub/hub` | 발신자 — **자동 감지**된다. 받는 쪽은 이 주소로 `tell -r` 하면 된다 |
-
-### 응답
-
-받은 세션의 Claude가 작업을 마치면 (CLAUDE.md 규약에 따라) **스스로 Bash에서 실행한다**:
-
-```bash
-tell -r a1b2c3 hub hub "완료: POST /refunds 추가, 테스트 12건 통과"
-```
-
-### 알아두면 좋은 동작
-
-- **큐잉**: 상대가 작업 중이어도 그냥 보내라. Claude Code가 입력을 큐에 쌓았다가 현재 작업이 끝나면 처리한다.
-- **덮어쓰기 방지**: 상대 입력창에 사람이 타이핑 중인 텍스트가 있으면 10초 대기 후 재시도한다 (최대 3회).
-- **자기완결 메시지**: 받는 쪽은 이 메시지 하나만 보고 일한다. 무엇을·어디를·어떻게 + "끝나면 받은 키로 응답"을 한 통에 담아라.
-- **사람 메시지 우선**: 헤더 없는 입력 = 사람이 직접 친 것. 규약상 즉시 처리된다 (세션 요청은 현재 작업 후 처리).
-
-## 규약(CLAUDE.md) — 브릿지의 나머지 절반
-
-`tell`은 전화선이고, **CLAUDE.md 규약은 통화 예절**이다. 이게 없으면 메시지는 도착해도 응답이 돌아오지 않는다 — 받은 Claude가 채팅에 텍스트로만 "완료!"라고 쓰고 끝내기 때문이다 (각 세션은 독립이라 그 텍스트를 상대는 영영 못 본다).
-
-`init`/`adopt`가 자동 삽입하는 규약의 핵심 4줄:
-
-1. **응답 = `tell -r`을 Bash로 실제 실행하는 것.** 채팅 텍스트는 응답이 아니다.
-2. 회신 주소는 받은 헤더의 `from`에서 읽는다. **자기 자신에게 보내면 루프다.**
-3. `[세션 요청]`이 작업 중에 오면 **현재 작업을 끝낸 뒤** 처리한다.
-4. 헤더 없는 메시지 = 사람 → 즉시 처리.
-
-템플릿 원문: [`templates/CLAUDE-section-role.md`](templates/CLAUDE-section-role.md) (역할 패널용) · [`templates/CLAUDE-section-hub.md`](templates/CLAUDE-section-hub.md) (허브용). 수동으로 붙여넣어도 된다 — `{{SESSION}}` 등 플레이스홀더만 채우면 됨.
-
-> **이미 떠 있는 세션에 규약을 로드하려면?** 재시작(CLAUDE.md는 시작 시 로드됨) 또는 더 간단히 — 그 세션에 이렇게 보내면 된다: `tell <세션> <역할> "CLAUDE.md를 Read로 읽고 tell 규약 숙지해. 받은 키로 tell -r 응답해줘"` — 이 한 통이 로드+검증을 겸한다. (`adopt`가 자동으로 해주는 것)
-
-## 권장 패턴: 허브(비서) 세션 + 폰 원격
-
-**허브 세션이란?** 여러 프로젝트를 **대신 지휘해주는 '비서' Claude 세션**이다. 코드를 직접 짜지 않고 — 사용자의 요청을 적절한 세션:역할로 나눠 시키고(위임), 응답(KEY)을 추적해 모아서 보고한다.
-
-> 예: 허브에게 *"서버에 환불 API 추가하고 웹에 버튼 달아줘"* 한 마디
-> → 허브가 `tell proj-a server "..."` 와 `tell proj-a web "..."` 를 보내고,
-> → 각 응답이 돌아오면 **"✅ 서버: 완료 / ✅ 웹: 완료"** 로 취합해 알려준다.
-
-P2P 대화가 코어지만, 프로젝트가 여럿이면 **허브 세션 하나**를 두는 걸 권장한다 (`tell init`에서 만들거나, 나중에 `tell hub`로 추가):
-
-```
-        사용자 (로컬 키보드 or 폰 Remote Control)
+        you (local keyboard or phone via Remote Control)
                     │
-                [hub:hub]  ← 라우팅·위임·취합·보고만. 코드는 안 짬
+                [hub]  ← routes, delegates, aggregates, reports. Writes no code.
               ┌─────┼─────────┐
         [proj-a:*]  [proj-b:*]  [proj-c:*]
 ```
 
-- **허브는 시스템 전체에 하나만 둔다** — 모든 프로젝트가 같은 허브 주소로 연결된다. `init`/`adopt`를 다시 돌려도 허브가 이미 있으면 묻지 않고 프로젝트 추가만 받는다. (교체: `tell rm <허브>` 후 `tell hub`)
-- 허브는 요청을 적절한 세션:역할로 **위임**하고, KEY별로 추적해서 **취합 보고**한다. 여러 건을 동시에 굴린다.
-- 아침에 `tell up` 한 번이면 허브·프로젝트 세션이 전부 켜지고 허브로 접속된다.
-- 사용자는 여전히 아무 패널이나 클릭해서 **직접** 지시할 수 있다 — 허브는 편의지 관문이 아니다.
-- **폰 원격(Remote Control)**: Claude Code의 원격 기능으로 허브 세션 하나만 잡으면, 밖에서도 전 프로젝트에 일을 시킬 수 있다. "급한데 노트북이 없다" 상황의 해법.
-- `tell init`이 허브용 CLAUDE.md(위임 원칙·논블로킹·보고 포맷 포함)를 자동 생성한다.
+- **Exactly one hub, system-wide** — every project links to the same hub address. Re-running `init`/`adopt` won't ask again if a hub exists; it just adds projects. (To replace: `tell rm <hub>` then `tell hub`.)
+- One `tell up` in the morning brings up the hub and all projects and drops you at the hub.
+- You can still click any pane to steer it directly — the hub is a convenience, not a gatekeeper.
+- **From your phone**: point Claude Code Remote Control at the hub session and you can drive every project from anywhere. The "urgent, but my laptop's at home" fix.
 
-## 여러 프로젝트 동시 운용
+## Lifecycle
 
-세션 이름이 곧 네임스페이스다. 설정 파일에 프로젝트를 계속 추가하면 된다:
+A workspace moves through four stages. The key idea is that **create and run are separate**:
 
 ```
-# ~/.config/claude-tell-bridge/workspaces.conf
-hub|hub|~/tell-hub
-shop|server|~/work/shop/backend
-shop|web|~/work/shop/frontend
-blog|server|~/work/blog/api
+create (register)      run (start)            stop                 delete
+tell init/adopt   ───►  tell up / ws  ◄───►  tell down   ───►   tell rm
+config only            starts in tmux         kill (config kept)   config + convention removed
+nothing running yet    launches claude                             (your project files untouched)
 ```
 
-`tell ws shop` / `tell ws blog` 로 각각 띄우고, 허브에서 `tell shop server "..."` / `tell blog server "..."` 로 구분해 부른다. 프로젝트끼리는 주소가 달라 섞이지 않고, 필요하면 (드물게) 프로젝트 간 대화도 같은 문법으로 가능하다.
-
-## 라이프사이클
-
-워크스페이스는 **생성 → 실행 → 끄기 → 삭제** 네 단계로 관리된다. 생성과 실행이 분리된 게 핵심이다:
-
-```
-생성(등록)            실행(켜기)              끄기                삭제
-tell init/adopt  ───►  tell up / ws  ◄───►  tell down  ───►  tell rm
-설정에 기록만          tmux에 띄움             종료(설정 유지)      설정+규약까지 제거
-아직 아무것도 안 뜸     claude 자동 실행                          (프로젝트 파일 무손상)
-```
-
-| 단계 | 명령 | 하는 일 |
+| Stage | Command | What it does |
 |---|---|---|
-| **생성** | `tell init` · `tell adopt` · `tell hub` | `workspaces.conf` 등록 + CLAUDE.md 규약 삽입. **실행은 안 됨** |
-| **실행** | `tell up` (전체) · `tell up <세션>` (하나) · `tell ws <세션>` (하나 켜고 접속) | 패널 분할 + claude 실행 (세션ID 있으면 `--resume`) |
-| **끄기** | `tell down <세션>` · `tell down --all` | 세션 종료만 — 설정 유지, `tell up`으로 복원 |
-| **삭제** | `tell rm <세션>` | 종료 + 설정 제거 + 규약 블록 제거 — 프로젝트 파일은 무손상 |
+| **Create** | `tell init` · `tell adopt` · `tell hub` | register in `workspaces.conf` + insert the CLAUDE.md convention. **Nothing runs.** |
+| **Run** | `tell up` (all) · `tell up <session>` (one) · `tell ws <session>` (one + attach) | split panes + launch claude (`--resume` if a session ID is set) |
+| **Stop** | `tell down <session>` · `tell down --all` | kill the session only — config kept, restore with `tell up` |
+| **Delete** | `tell rm <session>` | kill + remove from config + strip the convention block — your project files are untouched |
 
-## 명령어 레퍼런스
+## Command reference
 
-사람이 쓰는 건 아래 **관리 명령**이 전부다. 맨 위 두 줄(메시징)은 **에이전트끼리** 쓰는 명령 — 규약에 따라 Claude가 스스로 실행한다.
+Everything you run is a **management command** — a handful of them. The two messaging lines at the top are what the **agents** use between themselves; you never type those.
 
-| 명령 | 설명 |
+| Command | What it does |
 |---|---|
-| `tell <세션> <역할> "<메시지>"` | (에이전트용) 요청 전송. KEY 생성·출력, 발신자 헤더 자동 |
-| `tell -r <KEY> <세션> <역할> "<메시지>"` | (에이전트용) 응답 전송. 받은 요청의 KEY를 그대로 사용 |
-| `tell ws` | 실행 중 세션 + 설정된 워크스페이스 목록 |
-| `tell ws <세션>` | 워크스페이스 부트스트랩(패널 분할·제목·claude 실행, 세션ID 있으면 `--resume`) 후 접속 |
-| `tell up` | **설정된 허브·프로젝트 세션 전부 켜기** → 허브(있으면)로 접속. 이미 뜬 세션은 건너뜀 |
-| `tell up <세션>` | 그 세션만 켜기 (백그라운드 — 접속은 `tell ws <세션>`) |
-| `tell up --tabs` | 전부 켜되 한 창 접속 대신 **세션마다 터미널 탭**을 연다 (macOS, 허브가 마지막=포커스). iTerm2=탭 / Terminal.app=탭('손쉬운 사용' 권한 필요 — 없으면 새 창 폴백 + 안내) |
-| `tell down <세션>` \| `--all` | **끄기** — 세션 종료만, 설정은 유지 (다시 `tell up`으로 복원). `--all`은 설정된 세션만 종료하고 그 외 tmux 세션은 안 건드림 |
-| `tell init` | 셋업 마법사 — 허브(선택) → 프로젝트/역할/디렉터리 등록 + CLAUDE.md 규약 삽입 |
-| `tell adopt` | 쓰던 Claude 가져오기 — 떠 있는 패널 편입 + 기존 대화(세션ID) 이어받기 + 규약 삽입 |
-| `tell hub` | 총괄 관리(허브=비서) 세션 등록 — **허브는 하나만**, 이미 있으면 거절 |
-| `tell list` | **주소록** — 말 걸 수 있는 세션:역할 목록 + 규약/실행 여부 |
-| `tell rm <세션>` | **워크스페이스 삭제** — 세션 종료 + 설정 제거 + CLAUDE.md에 삽입했던 규약 블록 제거(백업 `.bak`). **프로젝트 파일·코드는 무손상.** 삭제 목록 보여주고 한 번만 확인 |
-| `tell doctor` | 환경 점검 (tmux/claude/설정/허브/템플릿) |
-| `tell completion` | 셸 자동완성 스크립트 — `.zshrc`에 `eval "$(tell completion)"` 한 줄. `tell <TAB>`=세션/서브커맨드, `tell <세션> <TAB>`=역할 |
+| `tell up` | **start every registered session** → attach to the hub (if any). Skips sessions already up |
+| `tell up <session>` | start just that session (in the background — attach with `tell ws`) |
+| `tell up --tabs` | start all, but open **a terminal tab per session** instead of one attached window (macOS; hub last = focused). iTerm2 = tabs / Terminal.app = tabs (needs Accessibility permission — falls back to new windows with a hint) |
+| `tell down <session>` \| `--all` | **stop** — kill the session only, config kept (restore with `tell up`). `--all` only touches registered sessions |
+| `tell ws` | list running sessions + registered workspaces |
+| `tell ws <session>` | bootstrap the workspace (split panes, titles, launch claude; `--resume` if a session ID is set) and attach |
+| `tell init` | setup wizard — register hub (optional) + projects/roles/directories + insert the CLAUDE.md convention |
+| `tell adopt` | bring in existing Claudes — adopt live panes + resume prior conversations by session ID + insert convention |
+| `tell hub` | register the manager (hub) session — **only one allowed**; refuses if one exists |
+| `tell list` | **address book** — who you can talk to + convention/running status |
+| `tell rm <session>` | **delete a workspace** — kill + remove from config + strip the inserted CLAUDE.md convention block (backup `.bak`). **Your project files/code are untouched.** Shows what it'll remove, confirms once |
+| `tell doctor` | environment check (tmux / claude / config / hub / templates) |
+| `tell completion` | shell completion script — add `eval "$(tell completion)"` to `.zshrc` |
+| `tell help` | full command list with descriptions |
 
-마법사(`init`/`adopt`/`hub`)의 **디렉터리 입력에서도 탭 완성**이 된다.
+The wizards (`init`/`adopt`/`hub`) also support **tab-completion on directory input**.
 
-종료코드: `0` 전송 성공 · `1` 대상 패널 없음 · `2` 인자 오류
+Exit codes: `0` sent · `1` no target pane · `2` bad arguments
 
-## 설정 파일
+## Config file
 
-`~/.config/claude-tell-bridge/workspaces.conf` — 한 줄에 패널 하나:
+`~/.config/claude-tell-bridge/workspaces.conf` — one pane per line:
 
 ```
-# 세션|역할|디렉터리|세션ID(선택)   ← #으로 시작하면 주석
+# session|role|directory|sessionID(optional)   ← # starts a comment
 shop|server|~/work/shop/backend
 shop|web|~/work/shop/frontend|f3a1b2c4-...
 ```
 
-- 같은 세션 이름의 줄들이 위에서부터 순서대로 패널이 된다 (첫 줄이 세션 생성, 이후 분할)
-- **4번째 필드(선택) = Claude 대화 세션ID** — 있으면 `ws`/`up`이 그 패널을 `claude --resume <ID>`로 띄워 기존 대화를 이어받는다 (`adopt`가 채워줌)
-- 같은 폴더의 `hub` 파일 = 허브 포인터(`세션|역할`). **허브가 하나뿐임을 보장하는 근거**로, `tell hub`/`tell rm`이 관리하니 직접 고칠 일은 거의 없다
-- `~` 홈 확장 지원
-- 환경변수 `TELL_CONFIG_DIR`로 설정 디렉터리를 바꿀 수 있다 (테스트/멀티 프로필용)
+- Lines sharing a session name become its panes, top to bottom (first line creates the session, the rest split).
+- **4th field (optional) = Claude conversation session ID** — if set, `ws`/`up` bring that pane up with `claude --resume <ID>` to continue the conversation (`adopt` fills this in).
+- A `hub` file in the same folder points to the hub (`session|role`) — it's what guarantees a single hub, managed by `tell hub`/`tell rm`, so you rarely touch it.
+- `~` home expansion supported.
+- `TELL_CONFIG_DIR` overrides the config directory (for tests / multiple profiles).
 
-## 트러블슈팅
+## Troubleshooting
 
-| 증상 | 원인 · 해법 |
+| Symptom | Cause · fix |
 |---|---|
-| `[tell] 대상 패널 없음: X:Y` | 세션 이름 또는 패널 제목 불일치. 에러에 함께 출력되는 "(가용)" 목록 확인. 패널 제목 지정: `tmux select-pane -T "역할"` |
-| **메시지는 갔는데 응답이 안 옴** | 십중팔구 **규약 미로드**. 그 세션 CLAUDE.md에 규약이 있는지, 세션이 그걸 읽었는지 확인. 빠른 해법: `tell <세션> <역할> "CLAUDE.md 읽고 받은 키로 tell -r 응답해줘"` |
-| 응답이 채팅에 텍스트로만 찍히고 안 돌아옴 | 같은 원인 — 규약의 1번("tell -r을 실제 실행")이 로드 안 된 것 |
-| `not in a mode` 가 잔뜩 출력 | 대상 패널이 copy-mode(스크롤 중)였음. `tmux send-keys -t <패널> -X cancel` 후 재전송 |
-| 전송이 10초씩 지연됨 | 정상 — 상대 입력창에 미제출 텍스트가 있어 덮어쓰기 방지 대기 중 |
-| `from`이 없는 요청이 옴 | tmux 밖(일반 셸)에서 보낸 것. 받는 쪽 규약상 회신처를 사람에게 묻게 됨 |
-| 한글 세션/역할 이름이 엉뚱한 패널로 감 (macOS) | 알려진 awk 로케일 버그 — 내부에서 `LC_ALL=C`로 회피해두었으니 최신 버전인지 확인 |
-| 새 패널에 claude 대신 셸만 뜸 | 그 디렉터리가 없거나 `claude` CLI가 PATH에 없음. `tell doctor` |
+| `[tell] no target pane: X:Y` | session name or pane title mismatch. Check the "(available)" list printed with the error; set a pane title with `tmux select-pane -T "role"` |
+| **message arrived but no reply** | almost always the **convention isn't loaded**. Check that the session's CLAUDE.md has it and the session read it. Quick fix: ask that session to "read CLAUDE.md and reply with the key you received" |
+| reply only printed as chat text, never came back | same cause — rule #1 of the convention ("actually run the reply command") wasn't loaded |
+| lots of `not in a mode` output | the target pane was in copy-mode (scrolling). `tmux send-keys -t <pane> -X cancel`, then resend |
+| a send delayed ~10s | normal — the target had unsubmitted text, so it waited to avoid overwriting it |
+| a new pane shows a shell, not claude | that directory doesn't exist or `claude` isn't on PATH. Run `tell doctor` |
 
 ## FAQ
 
-**Q. 서브에이전트(Task)랑 뭐가 다른가?**
-서브에이전트는 스폰됐다 사라지는 일회용이고, 매번 컨텍스트를 새로 쌓는다. 이 브릿지의 패널은 **상주 담당자**다 — 어제 왜 그렇게 설계했는지 기억하는 세션이 답한다. 서로 배타적이지 않다: 각 패널이 내부적으로 서브에이전트를 쓰면 된다.
+**How is this different from a subagent (Task)?**
+A subagent is a throwaway that rebuilds context every time. A pane here is a **resident teammate** — the session that remembers why it was designed that way yesterday answers you. Not mutually exclusive: each pane can use subagents internally.
 
-**Q. MCP로 만들지 왜 send-keys인가?**
-MCP 메시지 버스는 서버·훅 설정이 필요하고 대화가 프로토콜 뒤로 숨는다. send-keys는 **사람이 보는 화면과 AI가 받는 채널이 동일**해서 모든 대화가 눈에 보이고, 설치가 스크립트 한 개다. 트레이드오프는 [알려진 제약](#알려진-제약--로드맵) 참고.
+**Why send-keys instead of MCP?**
+An MCP message bus needs server and hook setup, and hides the conversation behind a protocol. Typing into the pane means **the screen a human watches and the channel the AI receives on are the same** — every exchange is visible, and install is a single script.
 
-**Q. 응답을 안 하면?**
-보낸 쪽 Claude가 KEY를 기억하고 있다가, 한참 없으면 재요청하거나 사용자에게 보고하는 게 규약이다. 전달 영수증(receipt) 자동화는 로드맵에 있다.
+**What if a session never replies?**
+The sender's Claude remembers the key and, after a while, re-asks or reports to you — that's part of the convention. Delivery receipts are on the roadmap.
 
-**Q. 같은 역할 이름이 두 세션에 있으면?**
-문제없다 — 주소는 `세션+역할` 쌍이다. 단 **한 세션 안에서** 역할(패널 제목)은 유일해야 한다 (첫 매칭 패널로 간다).
+**Same role name in two sessions?**
+Fine — an address is a `session + role` pair. Within **one** session, though, the role (pane title) must be unique (first match wins).
 
-**Q. 원격 서버의 세션과도 되나?**
-같은 tmux 서버 안에서만 동작한다. 원격은 SSH로 그 호스트의 tmux에 들어가 그쪽 브릿지를 쓰는 방식.
+**Does it reach sessions on a remote server?**
+Only within the same tmux server. For remote, SSH into that host's tmux and use the bridge there.
 
-## 보안
+## Security
 
-- **신뢰된 로컬 환경 전용.** `send-keys` 기반이라 같은 tmux 서버에 접근 가능한 누구나 어떤 패널에든 메시지를 주입할 수 있다. 상관키는 라우팅용이지 인증이 아니다.
-- **비밀번호·토큰·시크릿을 절대 tell로 보내지 마라.** 상대 패널의 스크롤백과 대화 트랜스크립트에 평문으로 남는다. 자격증명이 필요하면 파일 권한 있는 채널(scp 등)로 옮기고, 규약 템플릿에도 이 금지가 명시돼 있다.
-- 받는 쪽 Claude가 메시지를 "지시"로 처리하므로, tmux 서버 접근 권한 = 모든 세션에 대한 지시 권한임을 인지할 것.
+- **Trusted local environments only.** Because it's built on `send-keys`, anyone with access to the same tmux server can inject a message into any pane. The correlation key is for routing, not authentication.
+- **Never send passwords, tokens, or secrets through it.** They'd sit in plain text in the target pane's scrollback and transcript. Move credentials over a permissioned channel (scp, etc.); the convention template says so too.
+- The receiving Claude treats messages as instructions, so tmux-server access = the power to instruct every session. Know that.
 
-## 알려진 제약 · 로드맵
+## How it works (under the hood)
 
-**제약**
-- 입력창 감지가 Claude Code의 프롬프트 렌더링(`❯`)을 읽는다 — CLI UI가 크게 바뀌면 점검 필요
-- 전달 보장/영수증 없음 (fire-and-forget + 규약 기반 재요청)
-- 헤더 프로토콜이 현재 한국어
-- 세션 이름에 `=` 사용 불가
+You don't need any of this to use the tool — it's here for the curious and for contributors.
 
-**로드맵**
-- [ ] 헤더 i18n (영어 프로토콜 + 템플릿)
+Under the hood, sessions message each other with a command called `tell`, which types straight into the target pane's input box via `tmux send-keys`. A request carries a 6-character correlation key; the reply reuses it so the sender can match answers to requests. The receiving Claude follows the auto-inserted CLAUDE.md convention — its core rule being to **actually run** the reply command rather than just printing "done" as chat text (which no other session would ever see). The convention templates live in [`templates/`](templates/); `init`/`adopt` insert them for you, but you can paste them by hand too.
+
+That's the entire mechanism: type into a pane, tag with a key, follow a convention. The full source is one readable bash file.
+
+## Limitations & roadmap
+
+**Limitations**
+- Input detection reads Claude Code's prompt rendering (`❯`) — a big CLI UI change may need a look.
+- No delivery guarantee/receipt (fire-and-forget + convention-based re-asking).
+- The header protocol is currently Korean.
+- Session names can't contain `=`.
+
+**Roadmap**
+- [ ] Header i18n (English protocol + templates)
 - [ ] Homebrew tap
-- [ ] `tell status` — 대기 중 KEY 목록/추적
-- [ ] 전달 영수증(선택적)
+- [ ] `tell status` — list/track pending keys
+- [ ] Optional delivery receipts
 
-기여 환영 — 이슈/PR: https://github.com/namki1222/claude-tell-bridge
-
-## English (TL;DR)
-
-`claude-tell-bridge` lets multiple **long-lived** Claude Code sessions (tmux panes) message each other with correlation keys via `tmux send-keys` — no daemon, no MCP, one bash script + a CLAUDE.md convention. Each pane is a *resident* AI teammate that answers from its own codebase context. `npm i -g claude-tell-bridge`, then `tell init` (fresh) or `tell adopt` (absorb running sessions, no restart). Half the magic is the auto-inserted CLAUDE.md convention telling each Claude to *actually run* `tell -r KEY <session> <role> "..."` to reply. Recommended pattern: one hub session routes/aggregates across projects — pair it with Claude Code Remote Control to command your whole fleet from your phone. Korean-first headers for now; PRs welcome.
+Contributions welcome — issues/PRs: https://github.com/namki1222/claude-tell-bridge
 
 ## License
 
