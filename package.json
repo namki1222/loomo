@@ -1,7 +1,7 @@
 {
   "name": "loomo",
   "version": "0.6.0",
-  "description": "Weave your AI coding sessions into a team that talks to each other — over tmux. Works with Claude Code and Codex. Correlation-keyed async messaging between long-lived panes.",
+  "description": "Weave your Claude Code & Codex sessions into a team that talks to each other — multi-agent messaging over tmux, no daemon, no MCP.",
   "bin": {
     "loomo": "bin/tell",
     "tell": "bin/tell"
@@ -25,10 +25,14 @@
     "claude",
     "claude-code",
     "codex",
+    "codex-cli",
     "tmux",
     "multi-agent",
     "agent-orchestration",
-    "ai",
+    "ai-agents",
+    "session-to-session",
+    "terminal",
+    "orchestration",
     "cli",
     "messaging"
   ],

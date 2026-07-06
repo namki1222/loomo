@@ -1,305 +1,264 @@
 <div align="center">
 
-# claude-tell-bridge
+<br>
 
-**Let your Claude Code sessions talk to each other.**
+# loomo
 
-[![npm](https://img.shields.io/npm/v/claude-tell-bridge?style=flat-square)](https://www.npmjs.com/package/claude-tell-bridge)
+### Weave your Claude Code & Codex sessions into a team that talks to each other.
+
+<br>
+
+[![npm](https://img.shields.io/npm/v/loomo?style=flat-square)](https://www.npmjs.com/package/loomo)
 [![license](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-555?style=flat-square)](#requirements)
 
+<br>
+
 English · [한국어](README.ko.md) · [中文](README.zh-CN.md)
 
-No daemon · no database · no MCP — just one bash script and a convention.
+<sub>No daemon · no database · no MCP — just one script and a convention.</sub>
+
+<br>
 
 </div>
 
 ---
 
-Run one Claude Code session for your backend and another for your frontend, and you hit a wall fast: the two can't see each other. When the backend changes an API, **you** have to copy the result and paste it into the frontend session by hand. Every hand-off is a manual relay.
+<br>
 
-**claude-tell-bridge tears down that wall.** Your sessions become teammates that message each other directly — the backend finishes a change and tells the frontend itself, then the frontend does its part and reports back. You just talk to them in plain language; they coordinate on their own.
+Run one Claude Code session for your backend and another for your frontend, and you hit a wall fast: **the two can't see each other.**
+
+When the backend changes an API, *you* copy the result and paste it into the frontend session by hand. Every hand-off is a manual relay.
+
+<br>
+
+**loomo tears down that wall.** Your sessions become teammates that message each other directly — the backend finishes a change and tells the frontend itself, then the frontend does its part and reports back.
+
+You just talk to them in plain language; they coordinate on their own. And it doesn't care whether a session is **Claude Code or Codex** — they all talk over the same bridge.
+
+<br>
 
 ```
-Without it — you're the relay:
+Without it — you're the relay:         With it — they loop on their own:
 
-  [backend]  "done, API changed"
-      │
-      │  ✋ copy & paste
+
+  [backend]  "done, API changed"             ┌──"API changed, update the UI"──►┐
+
+      │                                  [backend]                          [frontend]
+
+      │  ✋ copy & paste                       └◄──────────"done ✅"─────────────┘
+
       ▼
-  [frontend]  "...paste it here"
 
-With it — they loop on their own:
-
-       ┌──"API changed, update the UI"──►┐
-  [backend]                          [frontend]
-       └◄──────────"done ✅"─────────────┘
-
-  you: one sentence, they handle the rest
+  [frontend]  "...paste it here"         you: one sentence, they handle the rest
 ```
 
-Each session is **long-lived** — a resident teammate that keeps its own project's history and context, not a throwaway agent that forgets everything between tasks.
+<br>
 
-## Table of contents
+Each session is **long-lived** — a resident teammate that keeps its own project's history, not a throwaway agent that forgets everything between tasks.
 
-- [What you get](#what-you-get)
-- [Requirements](#requirements)
-- [Install](#install)
-- [Quick start — from scratch](#quick-start--from-scratch)
-- [Quick start — adopt sessions you already have](#quick-start--adopt-sessions-you-already-have)
-- [The hub: run everything from one seat (and your phone)](#the-hub-run-everything-from-one-seat-and-your-phone)
-- [Lifecycle](#lifecycle)
-- [Command reference](#command-reference)
-- [Config file](#config-file)
-- [Troubleshooting](#troubleshooting)
-- [FAQ](#faq)
-- [Security](#security)
-- [How it works (under the hood)](#how-it-works-under-the-hood)
-- [Limitations & roadmap](#limitations--roadmap)
-- [License](#license)
+<br>
 
 ---
 
-## What you get
-
-Three ideas, that's the whole model:
-
-- **A session is a project team.** One session = one project (`shop`, `blog`, …).
-- **A pane is a resident AI teammate.** Its name is its role and its address (`server`, `web`, `infra`). A long-lived Claude Code runs in each pane, holding that codebase's history — not a subagent that spawns and vanishes.
-- **They talk to each other.** Ask any pane's Claude in plain language ("tell web the schema changed"), and it relays to the right teammate, who does the work and replies. You never type a messaging command yourself — the sessions handle it.
-
-```
-session "shop"  pane "server"  ┐
-session "shop"  pane "web"     ├── same team — they talk to each other
-session "shop"  pane "infra"   ┘
-
-session "blog"  pane "server"  ─── different team — separate address, never crosses over
-```
-
-There's no "connect" button. **A session being up is the connection.**
-
-**Why this way?**
-
-- **Ask the owner, not a guesser.** A resident session answers from its own code and environment ("how's your nginx set up?" → it opens the actual conf and tells you), instead of a fresh agent guessing.
-- **No re-onboarding.** Each pane keeps its project history, memory, and context across tasks.
-- **One screen = a control tower.** Every teammate works in view; click any pane to steer it directly.
-- **Async and non-blocking.** Requests are tracked by key, so the sender moves on and answers arrive later as new messages.
-- **Glass-box.** Every exchange is visible on screen. No hidden bus — you can step in anytime.
-- **Zero infrastructure.** No daemon, no queue, no MCP server, no hooks. The whole thing is one bash file.
+<br>
 
 ## Requirements
 
+<br>
+
 | Need | Check | Notes |
 |---|---|---|
-| **tmux** | `tmux -V` | 3.x recommended. `brew install tmux` |
-| **Claude Code** | `claude --version` | the AI that does the work in each pane |
-| **Node.js / npm** | `npm -v` | install channel only (runtime is pure bash) |
-| macOS or Linux | — | Windows expected to work under WSL (untested) |
+| **tmux** | `tmux -V` | 3.x recommended · `brew install tmux` |
+| **Claude Code and/or Codex** | `claude --version` / `codex --version` | the AI in each pane — mix freely |
+| **Node.js / npm** | `npm -v` | install channel only (runtime is pure shell) |
+| macOS or Linux | — | Windows expected under WSL (untested) |
+
+<br>
+
+---
+
+<br>
 
 ## Install
 
-```bash
-npm install -g claude-tell-bridge
-tell doctor        # environment check
-```
-
-Optional tab-completion for the management commands:
+<br>
 
 ```bash
-echo 'eval "$(tell completion)"' >> ~/.zshrc    # use ~/.bashrc for bash
+npm install -g loomo
+
+loomo doctor        # environment check
 ```
 
-## Quick start — from scratch
+<br>
 
-Setting up Claude Code in this shape for the first time? You'll have two Claudes talking to each other in about 5 minutes.
+---
 
-> 🐣 **New to tmux?** The [beginner's guide](docs/getting-started.md) walks you through prerequisites, basic tmux moves, and the first exchange with copy-paste steps. What's below is the condensed version.
+<br>
 
-**1. Create — register your workspace**
+## Set up your team
+
+<br>
 
 ```bash
-tell init
+loomo init
 ```
 
-> `init` only **registers**. It writes your config and plants the convention in each directory — **nothing runs yet.** Starting sessions is step 2.
+<br>
 
 The wizard asks, in order:
 
-1. **A hub (manager) session?** — a "secretary" Claude that directs multiple projects for you. Optional and skippable; just press Enter to skip and add one later with `tell hub`.
-2. **Register a project** — in order: **project name (= session name)** → **this Claude's role (= pane name)** → **directory**. Multiple roles per project. Example: project `demo` → role `api` → `~/work/demo/api` → role `web` → `~/work/demo/web` → Enter → Enter.
+<br>
 
-Registering also **inserts the collaboration convention into each directory's CLAUDE.md** — that's what tells the receiving Claude how to reply.
+- **1 · Default AI model** — `claude` or `codex`. You can override it per session later, so Claude and Codex can share one screen.
 
-**2. Run — start the sessions**
+- **2 · A hub (manager) session?** — an optional "secretary" that directs your projects. Skip with Enter; add later with `loomo hub`.
 
-```bash
-tell up            # start every registered session (split panes + launch claude), attach to the hub if you have one
-tell list          # address book — who you can talk to right now
-```
+- **3 · Projects** — for each: **project name (= session)** → **role (= pane)** → **directory** → **model** (Enter = default). Multiple roles per project.
 
-To start just one: `tell ws demo` (starts it and attaches). Because create and run are separate, one `tell up` restores your whole team after a reboot.
+<br>
 
-**3. First exchange** — just ask the `api` pane's Claude in plain language:
+This also inserts the collaboration convention into each directory (`CLAUDE.md` or `AGENTS.md`) — that's what tells the receiving AI to reply over the bridge.
 
-```
-send a ping to web and check that it replies
-```
+<br>
 
-You don't type any messaging command — the convention makes `api`'s Claude do it. A few seconds later a reply lands in the `api` pane. From this moment on, your sessions can hand work to each other — that's the whole point.
+---
 
-## Quick start — adopt sessions you already have
+<br>
 
-**Already running Claude Code sessions?** Adopt them in place — no restart, conversation context preserved.
+## Run & talk
+
+<br>
 
 ```bash
-tell adopt
+loomo up --all      # start every session (split panes + launch the AI), attach to the hub
+
+loomo up <project>  # or just one
+
+loomo list          # who you can talk to right now
 ```
 
-`adopt` handles two cases:
+<br>
 
-**① Adopt live panes** — Claudes already running in your split screen: it scans every pane, lets you name each one's role, inserts the convention into that directory's CLAUDE.md (skips if already there), and can send a "read the convention + ping" message on the spot so it loads and verifies without a restart.
+Then just ask any pane's AI in plain language:
 
-**② Bring in a conversation you were having** — a Claude from a plain terminal tab: give it the conversation's session ID (its directory is auto-detected from the conversation log) — or, if you don't know the ID, give the directory and pick from the recent conversations it lists. Once registered, `tell ws <project>` brings that pane up with `claude --resume` so it **continues the exact conversation** instead of starting fresh.
-
-## The hub: run everything from one seat (and your phone)
-
-A **hub** is a "secretary" Claude session that directs your other projects. It doesn't write code — it takes your request, delegates it to the right session, tracks the replies, and reports back.
-
-> Tell the hub *"add a refund API on the server and a button on the web"*, and it dispatches to both, then reports **"✅ server: done / ✅ web: done"** once each replies.
-
-Peer-to-peer is the core, but with several projects one hub is worth it (create it in `tell init`, or add it later with `tell hub`):
+<br>
 
 ```
-        you (local keyboard or phone via Remote Control)
-                    │
-                [hub]  ← routes, delegates, aggregates, reports. Writes no code.
-              ┌─────┼─────────┐
-        [proj-a:*]  [proj-b:*]  [proj-c:*]
+tell web the order schema changed and have it update the UI
 ```
 
-- **Exactly one hub, system-wide** — every project links to the same hub address. Re-running `init`/`adopt` won't ask again if a hub exists; it just adds projects. (To replace: `tell rm <hub>` then `tell hub`.)
-- One `tell up` in the morning brings up the hub and all projects and drops you at the hub.
-- You can still click any pane to steer it directly — the hub is a convenience, not a gatekeeper.
-- **From your phone**: point Claude Code Remote Control at the hub session and you can drive every project from anywhere. The "urgent, but my laptop's at home" fix.
+<br>
 
-## Lifecycle
+You never type a messaging command — the convention makes the AI relay it, and the other session replies on its own.
 
-A workspace moves through four stages. The key idea is that **create and run are separate**:
+**Claude → Codex, Codex → Claude, any direction.**
 
-```
-create (register)      run (start)            stop                 delete
-tell init/adopt   ───►  tell up / ws  ◄───►  tell down   ───►   tell rm
-config only            starts in tmux         kill (config kept)   config + convention removed
-nothing running yet    launches claude                             (your project files untouched)
-```
+<br>
 
-| Stage | Command | What it does |
-|---|---|---|
-| **Create** | `tell init` · `tell adopt` · `tell hub` | register in `workspaces.conf` + insert the CLAUDE.md convention. **Nothing runs.** |
-| **Run** | `tell up` (all) · `tell up <session>` (one) · `tell ws <session>` (one + attach) | split panes + launch claude (`--resume` if a session ID is set) |
-| **Stop** | `tell down <session>` · `tell down --all` | kill the session only — config kept, restore with `tell up` |
-| **Delete** | `tell rm <session>` | kill + remove from config + strip the convention block — your project files are untouched |
+---
 
-## Command reference
+<br>
 
-Everything you run is a **management command** — a handful of them. The two messaging lines at the top are what the **agents** use between themselves; you never type those.
+## Commands
+
+<br>
+
+Everything you run is a management command — a handful of them. Sessions message each other automatically via the convention; you never type that part.
+
+<br>
 
 | Command | What it does |
 |---|---|
-| `tell up` | **start every registered session** → attach to the hub (if any). Skips sessions already up |
-| `tell up <session>` | start just that session (in the background — attach with `tell ws`) |
-| `tell up --tabs` | start all, but open **a terminal tab per session** instead of one attached window (macOS; hub last = focused). iTerm2 = tabs / Terminal.app = tabs (needs Accessibility permission — falls back to new windows with a hint) |
-| `tell down <session>` \| `--all` | **stop** — kill the session only, config kept (restore with `tell up`). `--all` only touches registered sessions |
-| `tell layout [<session>] <preset>` | rearrange panes — `tiled` / `main-vertical` / `main-horizontal` / `even-horizontal` / `even-vertical`. No `tmux.conf` editing |
-| `tell ws` | list running sessions + registered workspaces |
-| `tell ws <session>` | bootstrap the workspace (split panes, titles, launch claude; `--resume` if a session ID is set) and attach |
-| `tell init` | setup wizard — register hub (optional) + projects/roles/directories + insert the CLAUDE.md convention |
-| `tell adopt` | bring in existing Claudes — adopt live panes + resume prior conversations by session ID + insert convention |
-| `tell hub` | register the manager (hub) session — **only one allowed**; refuses if one exists |
-| `tell list` | **address book** — who you can talk to + convention/running status |
-| `tell rm <session>` | **delete a workspace** — kill + remove from config + strip the inserted CLAUDE.md convention block (backup `.bak`). **Your project files/code are untouched.** Shows what it'll remove, confirms once |
-| `tell doctor` | environment check (tmux / claude / config / hub / templates) |
-| `tell completion` | shell completion script — add `eval "$(tell completion)"` to `.zshrc` |
-| `tell help` | full command list with descriptions |
+| `loomo up --all` \| `up <session>` | start all (→ attach hub) / one · bare `up` lists what's registered |
+| `loomo down <session>` \| `--all` | stop — kill the session only, config kept |
+| `loomo ws <session>` | start one and attach |
+| `loomo layout [<session>] <preset>` | rearrange panes (`tiled` / `main-vertical` / …), no `tmux.conf` |
+| `loomo init` | setup wizard — model, hub, projects/roles/dirs + convention |
+| `loomo adopt` | bring in AIs you're already running — no restart |
+| `loomo hub` | register the manager (hub) session — only one |
+| `loomo list` | address book — who you can talk to + status |
+| `loomo rm <session>` | delete a workspace — config + convention removed, project files untouched |
+| `loomo doctor` · `completion` · `help` | environment check · shell completion · full help |
 
-The wizards (`init`/`adopt`/`hub`) also support **tab-completion on directory input**.
+<br>
 
-Exit codes: `0` sent · `1` no target pane · `2` bad arguments
+Optional tab-completion:
 
-## Config file
-
-`~/.config/claude-tell-bridge/workspaces.conf` — one pane per line:
-
-```
-# session|role|directory|sessionID(optional)   ← # starts a comment
-shop|server|~/work/shop/backend
-shop|web|~/work/shop/frontend|f3a1b2c4-...
+```bash
+echo 'eval "$(loomo completion)"' >> ~/.zshrc
 ```
 
-- Lines sharing a session name become its panes, top to bottom (first line creates the session, the rest split).
-- **4th field (optional) = Claude conversation session ID** — if set, `ws`/`up` bring that pane up with `claude --resume <ID>` to continue the conversation (`adopt` fills this in).
-- A `hub` file in the same folder points to the hub (`session|role`) — it's what guarantees a single hub, managed by `tell hub`/`tell rm`, so you rarely touch it.
-- `~` home expansion supported.
-- `TELL_CONFIG_DIR` overrides the config directory (for tests / multiple profiles).
+<br>
 
-## Troubleshooting
+---
 
-| Symptom | Cause · fix |
-|---|---|
-| `[tell] no target pane: X:Y` | session name or pane title mismatch. Check the "(available)" list printed with the error; set a pane title with `tmux select-pane -T "role"` |
-| **message arrived but no reply** | almost always the **convention isn't loaded**. Check that the session's CLAUDE.md has it and the session read it. Quick fix: ask that session to "read CLAUDE.md and reply with the key you received" |
-| reply only printed as chat text, never came back | same cause — rule #1 of the convention ("actually run the reply command") wasn't loaded |
-| lots of `not in a mode` output | the target pane was in copy-mode (scrolling). `tmux send-keys -t <pane> -X cancel`, then resend |
-| a send delayed ~10s | normal — the target had unsubmitted text, so it waited to avoid overwriting it |
-| a new pane shows a shell, not claude | that directory doesn't exist or `claude` isn't on PATH. Run `tell doctor` |
+<br>
 
-## FAQ
+## Mixing Claude & Codex
 
-**How is this different from a subagent (Task)?**
-A subagent is a throwaway that rebuilds context every time. A pane here is a **resident teammate** — the session that remembers why it was designed that way yesterday answers you. Not mutually exclusive: each pane can use subagents internally.
+<br>
 
-**Why send-keys instead of MCP?**
-An MCP message bus needs server and hook setup, and hides the conversation behind a protocol. Typing into the pane means **the screen a human watches and the channel the AI receives on are the same** — every exchange is visible, and install is a single script.
+The bridge is agent-agnostic, so a **hub running Claude can command a project running Codex** — and vice versa.
 
-**What if a session never replies?**
-The sender's Claude remembers the key and, after a while, re-asks or reports to you — that's part of the convention. Delivery receipts are on the roadmap.
+Set the model per session in `loomo init` (or the 5th field of `~/.config/loomo/workspaces.conf`):
 
-**Same role name in two sessions?**
-Fine — an address is a `session + role` pair. Within **one** session, though, the role (pane title) must be unique (first match wins).
+<br>
 
-**Does it reach sessions on a remote server?**
-Only within the same tmux server. For remote, SSH into that host's tmux and use the bridge there.
+```
+howlpot|server|~/work/howlpot|      claude
+
+labs|dev|~/work/labs|               codex
+```
+
+<br>
+
+They share one screen and message each other exactly the same way — a Claude session hands work to a Codex session and gets the result back, no glue code.
+
+<br>
+
+---
+
+<br>
+
+## In practice — how the author uses it
+
+<br>
+
+I keep **6 projects** registered, each with 1–4 panes (server / app / dashboard …).
+
+<br>
+
+One **Claude hub session** oversees them all — it routes my request to the right session, tracks the replies, and reports back. Paired with Claude Code's **Remote Control**, I can drive the whole fleet **from my phone** when I'm away from my laptop.
+
+<br>
+
+When I'm heads-down on a single project, I skip the hub and talk to that **project session directly** — so its context carries across the whole day instead of restarting each time.
+
+<br>
+
+---
+
+<br>
 
 ## Security
 
-- **Trusted local environments only.** Because it's built on `send-keys`, anyone with access to the same tmux server can inject a message into any pane. The correlation key is for routing, not authentication.
-- **Never send passwords, tokens, or secrets through it.** They'd sit in plain text in the target pane's scrollback and transcript. Move credentials over a permissioned channel (scp, etc.); the convention template says so too.
-- The receiving Claude treats messages as instructions, so tmux-server access = the power to instruct every session. Know that.
+<br>
 
-## How it works (under the hood)
+- **Trusted local environments only.** Anyone with access to the same tmux server can inject a message into any pane. The correlation key routes, it doesn't authenticate.
 
-You don't need any of this to use the tool — it's here for the curious and for contributors.
+- **Never send passwords, tokens, or secrets through it** — they'd sit in plain text in the target pane's scrollback. Move credentials over a permissioned channel (scp, etc.).
 
-Under the hood, sessions message each other with a command called `tell`, which types straight into the target pane's input box via `tmux send-keys`. A request carries a 6-character correlation key; the reply reuses it so the sender can match answers to requests. The receiving Claude follows the auto-inserted CLAUDE.md convention — its core rule being to **actually run** the reply command rather than just printing "done" as chat text (which no other session would ever see). The convention templates live in [`templates/`](templates/); `init`/`adopt` insert them for you, but you can paste them by hand too.
+<br>
 
-That's the entire mechanism: type into a pane, tag with a key, follow a convention. The full source is one readable bash file.
+---
 
-## Limitations & roadmap
+<br>
 
-**Limitations**
-- Input detection reads Claude Code's prompt rendering (`❯`) — a big CLI UI change may need a look.
-- No delivery guarantee/receipt (fire-and-forget + convention-based re-asking).
-- The header protocol is currently Korean.
-- Session names can't contain `=`.
-
-**Roadmap**
-- [ ] Header i18n (English protocol + templates)
-- [ ] Homebrew tap
-- [ ] `tell status` — list/track pending keys
-- [ ] Optional delivery receipts
-
-Contributions welcome — issues/PRs: https://github.com/namki1222/claude-tell-bridge
-
-## License
+<div align="center">
 
 MIT © [namki1222](https://github.com/namki1222)
+
+<br>
+
+</div>
