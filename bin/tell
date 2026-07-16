@@ -93,7 +93,12 @@ agent_launch() { # agent resume_id session role dir → 패널에서 실행할 �
   # unattended approval prompt. Set LOOMO_AUTO_MODE=0 to restore CLI defaults.
   local auto="${LOOMO_AUTO_MODE:-1}" cx_opt="--sandbox danger-full-access" cl_opt=""
   if [ "$auto" != 0 ]; then
-    cl_opt="--permission-mode auto"
+    # When bypass is on (LOOMO_CLAUDE_BYPASS or the dashboard Settings toggle),
+    # a delegated claude pane skips the approval classifier — like the codex
+    # panes below — so it never stalls on an unattended prompt. Default 'auto'
+    # keeps the classifier guarding risky commands.
+    if _claude_bypass_on; then cl_opt="--permission-mode bypassPermissions"
+    else cl_opt="--permission-mode auto"; fi
     cx_opt="$cx_opt --ask-for-approval never"
   fi
   if [ -n "$rid" ]; then

@@ -3,7 +3,7 @@
 
 You are a role pane of the tmux session **{{SESSION}}**. Requests and replies are handled by **sending messages directly into the other pane's chat input** (no inbox, no polling).
 
-**Resolve the current hub:** the hub is runtime state. Before relying on its existence or address, actually run `loomo hub status`. Its successful `session|role` output is authoritative over any older address in this file. If it does not identify this pane as the current hub, do not act as the hub.
+**Resolve the current hub:** the hub is runtime state. Running `loomo hub status` tells you whether **you** are the hub: if you are, it prints just `session|role` (exit 0); otherwise it prints `you are … — NOT the hub` (non-zero exit). **If the output says 'NOT the hub' or exits non-zero, you are not the hub — never act or route like it** (do not fan out to other sessions/panes; send cross-project work through the hub). The printed hub address is authoritative over any older address in this file.
 
 **Send (request):** `loomo <session> <role> "<self-contained message>"`
 - loomo auto-issues and prints a 6-char KEY → remember it as "waiting for a reply with this KEY".

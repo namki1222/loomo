@@ -749,6 +749,14 @@ EOF
     fi
     mtop=0
   }
+  _settings_bypass_toggle() { # persist the claude approval-bypass setting the launch code reads
+    local f="$CONFIG_DIR/claude-bypass" cur=0 v=""
+    [ -f "$f" ] && { read -r v < "$f" 2>/dev/null; [ "$v" = 1 ] && cur=1; }
+    mkdir -p "$CONFIG_DIR" 2>/dev/null
+    if [ "$cur" = 1 ]; then printf '0\n' > "$f"; SETTINGS_MSG="Claude bypass off · 위임 패널의 승인 분류기 복원 (새 패널부터)"
+    else printf '1\n' > "$f"; SETTINGS_MSG="Claude bypass on · 위임 패널이 승인에서 안 멈춤 (새 패널부터)"; fi
+    mtop=0
+  }
   _open_session() { # double click: start if needed, then open in a new terminal window
     local session="$1" output rc
     loomo_log INFO dashboard.session.open "session=$session"
@@ -1065,6 +1073,11 @@ EOF
         _main_row ""
         _main_row "  ${C_B}Conventions${C_X}  ${C_D}협업 규약 동기화${C_X}"
         _main_row "  ${C_C}${C_B}[⟳ Sync now]${C_X}  ${C_D}모든 CLAUDE.md/AGENTS.md 갱신${C_X}" settingssync
+        _main_row ""
+        local bypass_on=0; [ "$(cat "$CONFIG_DIR/claude-bypass" 2>/dev/null)" = 1 ] && bypass_on=1
+        _main_row "  ${C_B}Delegated claude panes${C_X}  ${C_D}승인 프롬프트에서 안 멈춤${C_X}"
+        if [ "$bypass_on" = 1 ]; then _main_row "  ${C_G}${C_B}● Bypass on${C_X}   ${C_D}[Turn off]${C_X}" settingsbypass
+        else _main_row "  ${C_D}○ Bypass off${C_X}  ${C_C}[Turn on]${C_X}" settingsbypass; fi
         _main_row ""
         _main_row "  ${C_B}AI models${C_X}  ${C_D}[Refresh status]${C_X}" authrefresh
         _main_row "  ${C_D}로그인 상태와 계정을 관리합니다${C_X}"
@@ -1465,7 +1478,9 @@ EOF
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
   printf '\033]10;#f2f2f2\007\033]11;#000000\007\033[?1049h\033[40m\033[2J\033[?1000h\033[?1002h\033[?1003h\033[?1006h\033[?25l\033[?7l'
   _dash_cleanup() {
-    printf '\033[?1006l\033[?1003l\033[?1002l\033[?1000l\033[?7h\033[?25h\033[?1049l'
+    # OSC 110/111 restore the terminal's default fg/bg — the dashboard changed
+    # them via OSC 10/11 above, and leaving them set would recolor other panes.
+    printf '\033]110\007\033]111\007\033[?1006l\033[?1003l\033[?1002l\033[?1000l\033[?7h\033[?25h\033[?1049l'
     [ -n "$TTY_STATE" ] && stty "$TTY_STATE" </dev/tty 2>/dev/null || stty sane </dev/tty 2>/dev/null
   }
   trap '_dash_cleanup' EXIT
@@ -1614,6 +1629,7 @@ EOF
                               sethub) _settings_hub_target "$xarg" ;;
                               authrefresh) _settings_auth_refresh; SETTINGS_MSG="Status refreshed" ;;
                               settingssync) _settings_sync ;;
+                              settingsbypass) _settings_bypass_toggle ;;
                               authlogin) _settings_auth_login "$xarg" ;;
                               authlogout) _settings_auth_logout "$xarg" ;;
                               settingsskill) _settings_skill_start; mtop=0 ;;

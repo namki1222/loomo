@@ -3,6 +3,18 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); this project follows [SemVer](https://semver.org/).
 
+## [2.0.17] - 2026-07-16
+
+### Changed
+- **`loomo hub status` now identifies the caller.** It reports whether *you* are the hub — a non-hub pane gets `you are <s>|<r> — NOT the hub` and a non-zero exit, instead of the bare hub address everyone used to receive. This stops a non-hub session from misreading the hub address as "I am the hub" and broadcasting a request to every session/pane. Hub and role conventions updated to key off this signal.
+- **tmux advertises 24-bit color** (`terminal-features ",*:RGB"`), so the claude/codex TUI's text styles aren't downgraded to 256 colors inside tmux — some RGB colors previously collapsed to black/wrong.
+
+### Added
+- **Opt-in bypass for delegated claude panes.** A dashboard **Settings** toggle (and the `LOOMO_CLAUDE_BYPASS` env var) runs delegated claude panes in `bypassPermissions`, so unattended delegated work doesn't stall on the approval classifier (matching what codex panes already do). Default stays on the classifier.
+
+### Fixed
+- **Dashboard restores the terminal's default colors on exit** (OSC 110/111). It set fg/bg via OSC 10/11 on entry but never reset them, leaving other panes recolored after the dashboard closed.
+
 ## [2.0.14] - 2026-07-15
 
 ### Added

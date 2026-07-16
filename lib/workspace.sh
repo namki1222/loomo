@@ -256,7 +256,12 @@ cmd_agent_entry() { # internal: agent session role dir
       id=$(_new_uuid) || return 1
       _conf_bind_id "$session" "$role" "$id" || true
       loomo_log INFO conversation.bound "session=$session" "role=$role" "agent=claude" "id=$id"
-      local cl_opt=""; [ "${LOOMO_AUTO_MODE:-1}" = 0 ] || cl_opt="--permission-mode auto"
+      local cl_opt=""
+      if [ "${LOOMO_AUTO_MODE:-1}" != 0 ]; then
+        # Bypass (env or dashboard toggle) skips the approval classifier so
+        # delegated work never stalls unattended (default 'auto' still guards).
+        if _claude_bypass_on; then cl_opt="--permission-mode bypassPermissions"; else cl_opt="--permission-mode auto"; fi
+      fi
       exec claude $cl_opt --session-id "$id"
       ;;
     codex)
@@ -694,12 +699,22 @@ _conf_del() { # $1=session $2=role $3=dir → workspaces.conf 에서 해당 줄 
 
 cmd_hub() {
   if [ "${1:-}" = status ]; then
-    if get_hub; then
-      printf '%s|%s\n' "$HUB" "$HUBR"
-      return 0
+    get_hub || { echo "loomo: no hub configured" >&2; return 1; }
+    # Tell the CALLER whether IT is the hub — not just what the hub address is.
+    # Printing 'session|role' alone can't distinguish the real hub from any other
+    # pane that runs this, so a non-hub pane would misread the address as "I am
+    # the hub" and start routing/broadcasting for everyone.
+    local me_s="" me_r=""
+    if [ -n "${TMUX_PANE:-}" ] && inside_loomo_tmux; then
+      me_s=$(tmux display-message -p -t "$TMUX_PANE" '#{session_name}' 2>/dev/null)
+      me_r=$(tmux display-message -p -t "$TMUX_PANE" '#{pane_title}' 2>/dev/null)
     fi
-    echo "loomo: no hub configured" >&2
-    return 1
+    if [ -n "$me_s" ] && { [ "$me_s" != "$HUB" ] || [ "$me_r" != "$HUBR" ]; }; then
+      printf 'you are %s|%s — NOT the hub (hub is %s|%s)\n' "$me_s" "$me_r" "$HUB" "$HUBR"
+      return 3
+    fi
+    printf '%s|%s\n' "$HUB" "$HUBR"
+    return 0
   fi
   banner "hub · register the manager session"
   note "a hub is a 'secretary' session that directs your projects for you."
