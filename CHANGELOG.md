@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); this project follows [SemVer](https://semver.org/).
 
+## [2.0.19] - 2026-07-16
+
+### Fixed
+- **Dashboard follows the terminal's light/dark theme.** It no longer forces the terminal background to black via OSC or hardcodes white text — it renders on the terminal's native foreground/background and uses bold/dim on the default foreground for highlight/mute. Light-theme users get readable dark-on-light text instead of invisible text, and because loomo no longer overrides the terminal's colors, other panes (e.g. a Claude session) keep the user's own theme intact.
+
 ## [2.0.18] - 2026-07-16
 
 ### Added

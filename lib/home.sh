@@ -313,7 +313,9 @@ _dashboard() {
   local DETAIL_SESSION="" DETAIL_ADD=0 DETAIL_EDIT=0 DETAIL_DELETE=0 DETAIL_PRESET="" DETAIL_MSG="" EDIT_SESSION="" EDIT_ROLE=""
   local HOVER_AREA="" HOVER_INDEX=-1 HOVER_GROUP="" LAST_CLICK_SESSION="" LAST_CLICK_TIME=0
   local ADOPT_FILTER=claude ADOPT_LOADED=0 ADOPT_MSG="" ADOPT_SELECTED=""
-  local C_ACTIVE="" C_MUTED=""; [ -n "$C_X" ] && { C_ACTIVE=$'\033[97m\033[1m'; C_MUTED=$'\033[2m\033[37m'; }
+  # Highlight/mute with bold vs dim on the terminal's DEFAULT foreground, not a
+  # hardcoded white — so rows stay readable on both dark and light themes.
+  local C_ACTIVE="" C_MUTED=""; [ -n "$C_X" ] && { C_ACTIVE=$'\033[1m'; C_MUTED=$'\033[2m'; }
   local ROWS COLS MMAX=0 LW=0 SESSION_LEFT_W=0 LISTBODY=1 HUB_ROWS=0 STAR_X0=0 STAR_X1=0 STAR_Y=0 TASK_RESET_X0=0 TASK_RESET_X1=0 TASK_RESET_Y=0; _dash_size
   local -a TX0 TX1
   local VER; VER=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SELF_DIR/../package.json" 2>/dev/null | head -1)
@@ -1499,11 +1501,11 @@ EOF
   # 화면에 echo되지 않도록 TUI 수명 전체에서 입력 모드를 고정한다.
   local TTY_STATE; TTY_STATE=$(stty -g </dev/tty 2>/dev/null)
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
-  printf '\033]10;#f2f2f2\007\033]11;#000000\007\033[?1049h\033[40m\033[2J\033[?1000h\033[?1002h\033[?1003h\033[?1006h\033[?25l\033[?7l'
+  printf '\033[?1049h\033[2J\033[?1000h\033[?1002h\033[?1003h\033[?1006h\033[?25l\033[?7l'
   _dash_cleanup() {
     # OSC 110/111 restore the terminal's default fg/bg — the dashboard changed
     # them via OSC 10/11 above, and leaving them set would recolor other panes.
-    printf '\033]110\007\033]111\007\033[?1006l\033[?1003l\033[?1002l\033[?1000l\033[?7h\033[?25h\033[?1049l'
+    printf '\033[0m\033]110\007\033]111\007\033[?1006l\033[?1003l\033[?1002l\033[?1000l\033[?7h\033[?25h\033[?1049l'
     [ -n "$TTY_STATE" ] && stty "$TTY_STATE" </dev/tty 2>/dev/null || stty sane </dev/tty 2>/dev/null
   }
   trap '_dash_cleanup' EXIT
