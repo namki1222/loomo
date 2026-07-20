@@ -940,9 +940,12 @@ ws_add_configured_panel() { # session role dir resume_id agent — add one missi
     tmux kill-pane -t "$pane" 2>/dev/null || true
     return 1
   fi
-  tmux select-layout -t "=$session:" tiled 2>/dev/null || true
-  tmux set-option -w -t "=$session:" @loomo_layout tiled 2>/dev/null || true
-  loomo_log INFO panel.add.ok "session=$session" "role=$role" "pane=$pane" "agent=$agent"
+  # Re-apply the window's stored layout (main-vertical, etc.) instead of forcing
+  # tiled — restoring a missing pane must not discard the user's chosen layout.
+  local lay; lay=$(tmux show-option -wqv -t "=$session:" @loomo_layout 2>/dev/null); [ -n "$lay" ] || lay=tiled
+  tmux select-layout -t "=$session:" "$lay" 2>/dev/null || true
+  tmux set-option -w -t "=$session:" @loomo_layout "$lay" 2>/dev/null || true
+  loomo_log INFO panel.add.ok "session=$session" "role=$role" "pane=$pane" "agent=$agent" "layout=$lay"
   return 0
 }
 

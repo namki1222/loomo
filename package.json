@@ -1,6 +1,6 @@
 {
   "name": "@namki1222/loomo",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Weave your Claude Code & Codex sessions into a team that talks to each other — multi-agent messaging over tmux, no daemon, no MCP.",
   "bin": {
     "loomo": "bin/tell",

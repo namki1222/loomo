@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); this project follows [SemVer](https://semver.org/).
 
+## [2.1.2] - 2026-07-20
+
+### Fixed
+- **Restoring a missing pane no longer resets the layout to `tiled`.** When loomo re-created a configured pane that had gone missing (its agent quit, the pane died) on the next session open or `loomo up`, it forced the whole window back to `tiled`, discarding a chosen preset like `main-vertical`. It now re-applies the window's stored `@loomo_layout` (still `tiled` when none was set), so re-attaching keeps your layout.
+
 ## [2.1.1] - 2026-07-16
 
 ### Fixed
