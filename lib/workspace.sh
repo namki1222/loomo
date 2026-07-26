@@ -25,6 +25,7 @@ cmd_help() {
   row "list"       "address book — who you can talk to + convention/run status"
   row "task"       "task center — list · ack <KEY> · status <KEY> <state>"
   row "skill"      "Markdown skills — add · list (also available from pane right-click)"
+  row "account"    "AI accounts — list · add · use · login · logout"
   row "sync"       "refresh loomo blocks in CLAUDE.md/AGENTS.md (other content preserved)"
   row "tmux"       "tmux isolation — status · dedicated · legacy"
   row "rm"         "delete workspace — kill + config + convention block removed (project files untouched)"
@@ -251,6 +252,7 @@ PY
 
 cmd_agent_entry() { # internal: agent session role dir
   local ag="${1:-}" session="${2:-}" role="${3:-}" dir="${4:-$PWD}" id="" started
+  account_export_env "$ag" || true
   case "$ag" in
     claude)
       id=$(_new_uuid) || return 1

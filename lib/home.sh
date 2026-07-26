@@ -309,7 +309,8 @@ _dashboard() {
   local PENDING_TARGET="" PENDING_ROLE=""
   local BROWSE_DIR="$PWD" ADD_BROWSE=0
   local ARRANGE_MODE=0 ARRANGE_MSG=""
-  local SETTINGS_PAGE=main SETTINGS_MSG="" SKILL_DELETE="" CLAUDE_AUTH=unknown CODEX_AUTH=unknown
+  local SETTINGS_PAGE=main SETTINGS_MSG="" SKILL_DELETE="" ACCT_SWITCH="" CLAUDE_AUTH=unknown CODEX_AUTH=unknown
+  local CLAUDE_ACCT=() CODEX_ACCT=()   # cached account rows for the Settings render (id\tlabel\tactive\tident\tplan\thasToken)
   local DETAIL_SESSION="" DETAIL_ADD=0 DETAIL_EDIT=0 DETAIL_DELETE=0 DETAIL_PRESET="" DETAIL_MSG="" EDIT_SESSION="" EDIT_ROLE=""
   local HOVER_AREA="" HOVER_INDEX=-1 HOVER_GROUP="" LAST_CLICK_SESSION="" LAST_CLICK_TIME=0
   local ADOPT_FILTER=claude ADOPT_LOADED=0 ADOPT_MSG="" ADOPT_SELECTED=""
@@ -727,6 +728,21 @@ EOF
     CLAUDE_AUTH=unavailable; CODEX_AUTH=unavailable
     command -v claude >/dev/null 2>&1 && { if claude auth status >/dev/null 2>&1; then CLAUDE_AUTH=connected; else CLAUDE_AUTH=signed-out; fi; }
     command -v codex >/dev/null 2>&1 && { if codex login status >/dev/null 2>&1; then CODEX_AUTH=connected; else CODEX_AUTH=signed-out; fi; }
+    _settings_accounts_refresh
+  }
+  _settings_accounts_refresh() { # populate CLAUDE_ACCT / CODEX_ACCT caches (id\tlabel\tactive\tident\tplan\thasToken)
+    local ln id label active root ident plan
+    CLAUDE_ACCT=(); CODEX_ACCT=()
+    while IFS= read -r ln; do [ -n "$ln" ] && CLAUDE_ACCT+=("$ln"); done < <(_account_mutate kc-rows claude 2>/dev/null)
+    while IFS=$'\t' read -r id label active root; do
+      [ -n "$id" ] || continue
+      if command -v codex >/dev/null 2>&1 && _account_connected codex "$id" "$root"; then
+        IFS=$'\t' read -r ident plan <<< "$(_account_identity codex "$id" "$root")"
+        CODEX_ACCT+=("$id"$'\t'"$label"$'\t'"$active"$'\t'"${ident:-$label}"$'\t'"$plan"$'\t'1)
+      else
+        CODEX_ACCT+=("$id"$'\t'"$label"$'\t'"$active"$'\t'"$label"$'\t'""$'\t'0)
+      fi
+    done < <(_account_mutate rows codex 2>/dev/null)
   }
   _settings_auth_login() { # $1=claude|codex
     mkdir -p "$CONFIG_DIR"
@@ -745,6 +761,97 @@ EOF
       *) return 1 ;;
     esac
     SETTINGS_MSG="$1 logout started in background"
+  }
+  _settings_account_add() { # provider — create a profile slot + browser login
+    local provider="$1" result id root log
+    result=$(_account_mutate add "$provider" 2>/dev/null) || { SETTINGS_MSG="Account profile creation failed"; return 1; }
+    IFS=$'\t' read -r id root <<< "$result"
+    log="$CONFIG_DIR/${provider}-${id}-auth.log"
+    if [ "$provider" = claude ]; then
+      _account_mutate kc-capture claude >/dev/null 2>&1 || true   # save current login before the browser replaces it
+      nohup claude auth login </dev/null >"$log" 2>&1 &
+      SETTINGS_MSG="Claude 계정 추가 · 브라우저에서 새 계정으로 로그인한 뒤 그 계정 줄의 [Login]을 클릭하세요"
+    else
+      nohup env CODEX_HOME="$root" codex login </dev/null >"$log" 2>&1 &
+      SETTINGS_MSG="Codex 계정 추가 · 브라우저 승인 후 해당 계정을 클릭해 선택하세요"
+    fi
+    _settings_accounts_refresh
+    mtop=0
+  }
+  _settings_account_profile() { # provider|id — switch a connected profile or start its login
+    local provider id resolved root log
+    IFS='|' read -r provider id <<< "$1"
+    resolved=$(_account_resolve "$provider" "$id" 2>/dev/null) || { SETTINGS_MSG="Account profile not found"; return 1; }
+    IFS=$'\t' read -r id root <<< "$resolved"
+    if [ "$provider" = claude ]; then
+      if _account_mutate kc-rows claude 2>/dev/null | LC_ALL=C awk -F'\t' -v id="$id" '$1==id && $6==1{found=1} END{exit !found}'; then
+        ACCT_SWITCH="$provider|$id"
+        SETTINGS_MSG=""
+      else
+        _settings_account_login "$provider|$id"
+      fi
+    elif _account_connected "$provider" "$id" "$root"; then
+      ACCT_SWITCH="$provider|$id"
+      SETTINGS_MSG=""
+    else
+      log="$CONFIG_DIR/${provider}-${id}-auth.log"
+      if [ "$id" = default ]; then nohup codex login </dev/null >"$log" 2>&1 &
+      else nohup env CODEX_HOME="$root" codex login </dev/null >"$log" 2>&1 & fi
+      SETTINGS_MSG="$provider login started · 브라우저 승인 후 다시 클릭해 선택하세요"
+    fi
+    mtop=0
+  }
+  _settings_account_switch() { # provider|id — apply after the dashboard confirmation
+    local provider id result rc resolved root
+    IFS='|' read -r provider id <<< "$1"
+    ACCT_SWITCH=""
+    if [ "$provider" = claude ]; then
+      result=$(_account_mutate kc-select claude "$id" 2>/dev/null); rc=$?
+      case "$rc" in
+        0) SETTINGS_MSG="Claude 계정 전환 완료 → ${result#*$'\t'} · 새 패널·재시작 세션부터 적용" ;;
+        4) SETTINGS_MSG="이 계정은 저장된 로그인이 없어요 · 먼저 Login 하세요" ;;
+        3) SETTINGS_MSG="계정 프로필을 찾지 못했어요" ;;
+        *) SETTINGS_MSG="계정 전환에 실패했어요" ;;
+      esac
+    else
+      resolved=$(_account_resolve codex "$id" 2>/dev/null) || { SETTINGS_MSG="계정 프로필을 찾지 못했어요"; return 1; }
+      IFS=$'\t' read -r id root <<< "$resolved"
+      if ! _account_connected codex "$id" "$root"; then
+        SETTINGS_MSG="이 계정은 로그인되지 않았어요 · 먼저 Login 하세요"
+      elif _account_mutate use codex "$id" >/dev/null 2>&1; then
+        SETTINGS_MSG="Codex 계정 전환 완료 → $id · 새 패널·재시작 세션부터 적용"
+      else
+        SETTINGS_MSG="계정 전환에 실패했어요"
+      fi
+    fi
+    _settings_accounts_refresh
+    mtop=0
+  }
+  _settings_account_login() { # provider|id — login, or adopt a completed Claude browser login
+    local provider id owner_id live_email resolved root log
+    IFS='|' read -r provider id <<< "$1"
+    ACCT_SWITCH=""
+    if [ "$provider" = claude ]; then
+      IFS=$'\t' read -r owner_id live_email <<< "$(_account_mutate kc-live-owner claude 2>/dev/null)"
+      if [ -z "$owner_id" ] && [ -n "$live_email" ]; then
+        # A finished login is sitting unclaimed in the Keychain → adopt it into this profile.
+        if _account_mutate kc-select claude "$id" >/dev/null 2>&1; then SETTINGS_MSG="Claude 계정 연결 완료 → $live_email"
+        else SETTINGS_MSG="계정 적용에 실패했어요"; fi
+      else
+        _account_mutate kc-capture claude >/dev/null 2>&1 || true   # keep the current login before it's replaced
+        nohup claude auth login </dev/null >"$CONFIG_DIR/claude-${id}-auth.log" 2>&1 &
+        SETTINGS_MSG="Claude 로그인 시작 · 브라우저 승인 후 이 계정의 [Login]을 다시 클릭하세요"
+      fi
+    else
+      resolved=$(_account_resolve codex "$id" 2>/dev/null) || { SETTINGS_MSG="계정 프로필을 찾지 못했어요"; return 1; }
+      IFS=$'\t' read -r id root <<< "$resolved"
+      log="$CONFIG_DIR/codex-${id}-auth.log"
+      if [ "$id" = default ]; then nohup codex login </dev/null >"$log" 2>&1 &
+      else nohup env CODEX_HOME="$root" codex login </dev/null >"$log" 2>&1 & fi
+      SETTINGS_MSG="Codex 로그인 시작 · 브라우저 승인 후 Refresh status를 눌러주세요"
+    fi
+    _settings_accounts_refresh
+    mtop=0
   }
   _settings_skill_start() {
     FLOW=SkillAdd; FSTEP=1; INPUT=""; LOG=("${C_B}＋ Add Markdown skill${C_X}" "" "이 화면에 .md 파일을 드래그앤드롭하세요." "${C_D}직접 경로를 입력해도 됩니다.${C_X}")
@@ -1119,21 +1226,57 @@ EOF
         _main_row "  ${C_C}${C_B}[${theme_now}]${C_X}  ${C_D}클릭 = auto → dark → light${C_X}" settingstheme
         _main_row ""
         _main_row "  ${C_B}AI models${C_X}  ${C_D}[Refresh status]${C_X}" authrefresh
-        _main_row "  ${C_D}로그인 상태와 계정을 관리합니다${C_X}"
+        _main_row "  ${C_D}새 패널과 재시작 세션은 선택된 계정으로 열립니다${C_X}"
         _main_row ""
-        case "$CLAUDE_AUTH" in
-          connected) ast="${C_G}${C_B}●${C_X}"; _main_row "  $ast ${C_B}Claude${C_X}  ${C_R}[Logout]${C_X}" authlogout claude ;;
-          signed-out) ast="${C_R}${C_B}●${C_X}"; _main_row "  $ast ${C_B}Claude${C_X}  ${C_G}[Login]${C_X}" authlogin claude ;;
-          connecting) ast="${C_Y}${C_B}●${C_X}"; _main_row "  $ast ${C_B}Claude${C_X}  ${C_D}logging in…${C_X}" ;;
-          *) ast="${C_R}×${C_X}"; _main_row "  $ast ${C_B}Claude${C_X}  ${C_D}unavailable${C_X}" ;;
-        esac
-        _main_row ""
-        case "$CODEX_AUTH" in
-          connected) ast="${C_G}${C_B}●${C_X}"; _main_row "  $ast ${C_B}Codex${C_X}   ${C_R}[Logout]${C_X}" authlogout codex ;;
-          signed-out) ast="${C_R}${C_B}●${C_X}"; _main_row "  $ast ${C_B}Codex${C_X}   ${C_G}[Login]${C_X}" authlogin codex ;;
-          connecting) ast="${C_Y}${C_B}●${C_X}"; _main_row "  $ast ${C_B}Codex${C_X}   ${C_D}logging in…${C_X}" ;;
-          *) ast="${C_R}×${C_X}"; _main_row "  $ast ${C_B}Codex${C_X}   ${C_D}unavailable${C_X}" ;;
-        esac
+        local ap_provider ap_id ap_label ap_active ap_identity ap_plan ap_token ap_mark ap_detail ap_action ap_row
+        for ap_provider in claude codex; do
+          if [ "$ap_provider" = claude ]; then
+            _main_row "  ${C_B}Claude${C_X}"
+            for ap_row in "${CLAUDE_ACCT[@]}"; do
+              IFS=$'\t' read -r ap_id ap_label ap_active ap_identity ap_plan ap_token <<< "$ap_row"
+              ap_mark="${C_D}○${C_X}"; ap_action="${C_G}[Login]${C_X}"
+              [ "$ap_active" = 1 ] && { ap_mark="${C_G}${C_B}●${C_X}"; ap_action="${C_D}사용 중${C_X}"; }
+              [ "$ap_active" != 1 ] && [ "$ap_token" = 1 ] && ap_action="${C_C}[전환]${C_X}"
+              ap_detail="${ap_identity:-$ap_label}"; [ -n "$ap_plan" ] && ap_detail="$ap_detail · $ap_plan"
+              if [ "$ap_active" = 1 ]; then
+                _main_row "    $ap_mark ${C_B}$ap_detail${C_X}  ${C_D}$ap_id${C_X}  $ap_action"
+              elif [ "$ap_token" = 1 ]; then
+                _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctswitch "$ap_provider|$ap_id"
+              else
+                _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctlogin "$ap_provider|$ap_id"
+              fi
+              if [ "$ACCT_SWITCH" = "$ap_provider|$ap_id" ]; then
+                _main_row "      ${C_Y}이 계정으로 전환할까요?${C_X}"
+                _main_row "      ${C_D}[취소]${C_X}" acctswitchcancel
+                _main_row "      ${C_C}${C_B}[전환]${C_X}" acctswitchconfirm "$ap_provider|$ap_id"
+              fi
+            done
+          else
+            _main_row ""
+            _main_row "  ${C_B}Codex${C_X}"
+            for ap_row in "${CODEX_ACCT[@]}"; do
+              IFS=$'\t' read -r ap_id ap_label ap_active ap_identity ap_plan ap_token <<< "$ap_row"
+              ap_mark="${C_D}○${C_X}"; ap_action="${C_G}[Login]${C_X}"
+              [ "$ap_active" = 1 ] && { ap_mark="${C_G}${C_B}●${C_X}"; ap_action="${C_D}사용 중${C_X}"; }
+              [ "$ap_active" != 1 ] && [ "$ap_token" = 1 ] && ap_action="${C_C}[전환]${C_X}"
+              ap_detail="${ap_identity:-$ap_label}"; [ -n "$ap_plan" ] && ap_detail="$ap_detail · $ap_plan"
+              if [ "$ap_active" = 1 ]; then
+                _main_row "    $ap_mark ${C_B}$ap_detail${C_X}  ${C_D}$ap_id${C_X}  $ap_action"
+              elif [ "$ap_token" = 1 ]; then
+                _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctswitch "$ap_provider|$ap_id"
+              else
+                _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctlogin "$ap_provider|$ap_id"
+              fi
+              if [ "$ACCT_SWITCH" = "$ap_provider|$ap_id" ]; then
+                _main_row "      ${C_Y}이 계정으로 전환할까요?${C_X}"
+                _main_row "      ${C_D}[취소]${C_X}" acctswitchcancel
+                _main_row "      ${C_C}${C_B}[전환]${C_X}" acctswitchconfirm "$ap_provider|$ap_id"
+              fi
+            done
+          fi
+          _main_row "    ${C_C}[＋ Add $ap_provider account]${C_X}" accountadd "$ap_provider"
+        done
+        _main_row "  ${C_D}CLI: loomo account list · use <provider> <id>${C_X}"
         _main_row ""
         local skill_count=0 skill_path skill_dir skill_slug skill_name
         [ -d "$SKILL_DIR" ] && skill_count=$(find "$SKILL_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
@@ -1672,6 +1815,12 @@ EOF
                               settingstheme) _settings_theme_cycle ;;
                               authlogin) _settings_auth_login "$xarg" ;;
                               authlogout) _settings_auth_logout "$xarg" ;;
+                              accountadd) _settings_account_add "$xarg" ;;
+                              accountprofile) _settings_account_profile "$xarg" ;;
+                              acctswitch) ACCT_SWITCH="$xarg"; SETTINGS_MSG=""; mtop=0 ;;
+                              acctswitchconfirm) _settings_account_switch "$xarg" ;;
+                              acctswitchcancel) ACCT_SWITCH=""; SETTINGS_MSG=""; mtop=0 ;;
+                              acctlogin) _settings_account_login "$xarg" ;;
                               settingsskill) _settings_skill_start; mtop=0 ;;
                               settingsskilldelete) SKILL_DELETE="$xarg"; SETTINGS_MSG=""; mtop=0 ;;
                               settingsskillcancel) SKILL_DELETE=""; mtop=0 ;;

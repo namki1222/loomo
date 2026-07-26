@@ -12,6 +12,7 @@
 #   loomo add                   register a project — session, roles, dirs, model + convention
 #   loomo adopt                 bring in AIs you already run + resume prior conversations
 #   loomo hub                   register the manager (hub) session — only one system-wide
+#   loomo account               manage Claude/Codex login profiles
 #   loomo list                  address book — who you can talk to + convention status
 #   loomo rm <session>          delete workspace — kill + config + convention block removed
 #   loomo task | doctor | completion | help
@@ -91,7 +92,8 @@ agent_launch() { # agent resume_id session role dir → 패널에서 실행할 �
   local ag="${1:-claude}" rid="${2:-}" session="${3:-}" role="${4:-}" dir="${5:-$PWD}"
   # New loomo panes start in auto mode so delegated work does not stop at an
   # unattended approval prompt. Set LOOMO_AUTO_MODE=0 to restore CLI defaults.
-  local auto="${LOOMO_AUTO_MODE:-1}" cx_opt="--sandbox danger-full-access" cl_opt=""
+  local auto="${LOOMO_AUTO_MODE:-1}" cx_opt="--sandbox danger-full-access" cl_opt="" account_prefix=""
+  account_prefix=$(account_launch_prefix "$ag" 2>/dev/null || true)
   if [ "$auto" != 0 ]; then
     # When bypass is on (LOOMO_CLAUDE_BYPASS or the dashboard Settings toggle),
     # a delegated claude pane skips the approval classifier — like the codex
@@ -111,8 +113,8 @@ agent_launch() { # agent resume_id session role dir → 패널에서 실행할 �
   esac
   if [ -n "$rid" ]; then
     case "$ag" in
-      codex) printf 'exec codex %s resume %s' "$cx_opt" "$rid" ;;   # codex: 서브커맨드
-      *)     printf 'exec claude %s%s --resume %s' "$cl_opt" "$cl_theme" "$rid" ;; # claude: 플래그
+      codex) printf 'exec %scodex %s resume %s' "$account_prefix" "$cx_opt" "$rid" ;;   # codex: 서브커맨드
+      *)     printf 'exec %sclaude %s%s --resume %s' "$account_prefix" "$cl_opt" "$cl_theme" "$rid" ;; # claude: 플래그
     esac
   else
     # A fresh CLI chooses a conversation ID only after launch. Route it through
@@ -218,7 +220,7 @@ fi
 
 
 # ── load command/UI modules (functions live in lib/) ──
-for _lib in common ui tasks skills workspace adopt completion home; do
+for _lib in common ui tasks skills accounts workspace adopt completion home; do
   . "$SELF_DIR/../lib/$_lib.sh" || { echo "loomo: missing lib/$_lib.sh — reinstall: npm i -g @namki1222/loomo" >&2; exit 1; }
 done
 
@@ -236,6 +238,7 @@ case "${1:-}" in
   restart) shift; cmd_restart "$@"; exit $? ;;
   task)   shift; cmd_task "$@";   exit $? ;;
   skill)  shift; cmd_skill "$@";  exit $? ;;
+  account) shift; cmd_account "$@"; exit $? ;;
   sync)   shift; cmd_sync "$@";   exit $? ;;
   tmux)   shift; cmd_tmux_mode "$@"; exit $? ;;
   help|--help|-h) cmd_help;       exit 0 ;;
