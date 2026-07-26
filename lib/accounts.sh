@@ -177,30 +177,91 @@ if (action === 'rows') {
     state.active[provider] = target; save();
     console.log(`captured\t${curEmail}`);
   }
+} else if (action === 'remove') { // drop a profile slot (never the 'default' one) and its stored files
+  const id = resolve(value); if (!id) process.exit(3);
+  if (id === 'default') process.exit(6);
+  state.profiles[provider] = state.profiles[provider].filter((p) => p.id !== id);
+  if (state.active[provider] === id) state.active[provider] = 'default';
+  try { fs.rmSync(profileRoot(id), { recursive: true, force: true }); } catch {}
+  save();
+  console.log(id);
+} else if (action === 'tok-file') { // claude — path of the profile's long-lived token file
+  const id = resolve(value); if (!id) process.exit(3);
+  console.log(path.join(ensure(id), 'oauth-token'));
+} else if (action === 'tok-rows') { // claude — id\tlabel\tactive\temail\tplan\thasToken (long-lived token store)
+  const activeId = state.active[provider] || 'default';
+  for (const p of profiles) {
+    const root = profileRoot(p.id);
+    let email = '', plan = '', hasToken = '0';
+    try { if (fs.readFileSync(path.join(root, 'oauth-token'), 'utf8').trim()) hasToken = '1'; } catch {}
+    try { const m = JSON.parse(fs.readFileSync(path.join(root, 'oauth-token.meta.json'), 'utf8')); email = m.email || ''; plan = m.plan || ''; } catch {}
+    console.log([p.id, p.label || 'Additional account', activeId === p.id ? '1' : '0', email, plan, hasToken].join('\t'));
+  }
+} else if (action === 'tok-save') { // claude — store token (env LOOMO_TOKEN_IN) + identity for <value>
+  const id = resolve(value); if (!id) process.exit(3);
+  const token = (process.env.LOOMO_TOKEN_IN || '').trim();
+  if (!token) process.exit(5);
+  const root = ensure(id);
+  fs.writeFileSync(path.join(root, 'oauth-token'), `${token}\n`, { mode: 0o600 });
+  fs.writeFileSync(path.join(root, 'oauth-token.meta.json'), JSON.stringify({
+    email: process.env.LOOMO_TOKEN_EMAIL || '', plan: process.env.LOOMO_TOKEN_PLAN || '', savedAt: Date.now(),
+  }, null, 2), { mode: 0o600 });
+  console.log(id);
+} else if (action === 'tok-forget') { // claude — drop a stored token (never touches the live login)
+  const id = resolve(value); if (!id) process.exit(3);
+  const root = profileRoot(id);
+  for (const f of ['oauth-token', 'oauth-token.meta.json']) { try { fs.unlinkSync(path.join(root, f)); } catch {} }
+  console.log(id);
+} else if (action === 'tok-use') { // claude — activate a profile that already has a stored token (instant, no browser)
+  const id = resolve(value); if (!id) process.exit(3);
+  let has = false;
+  try { has = !!fs.readFileSync(path.join(profileRoot(id), 'oauth-token'), 'utf8').trim(); } catch {}
+  if (!has && id !== 'default') process.exit(4);   // 'default' means "whatever claude is logged in as"
+  state.active[provider] = id; save();
+  console.log(id);
 } else {
   process.exit(2);
 }
 NODE
 }
 
-account_export_env() { # provider — apply selected account to this process
-  local provider root
+# Claude's OAuth token lives in a single per-user macOS Keychain entry, so accounts
+# cannot be isolated with CLAUDE_CONFIG_DIR, and rewriting that entry is unsafe:
+# any running pane refreshes its token (~8h) and writes back, clobbering the swap.
+# Instead every pane is launched with the selected profile's long-lived token in
+# CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), which overrides the Keychain
+# without touching it. The 'default' profile injects nothing = use the live login.
+# Codex stays file-isolated via CODEX_HOME.
+_account_token_file() { # claude — prints the active profile's token file, only when non-empty
+  local f
+  f=$(_account_mutate tok-file claude 2>/dev/null) || return 1
+  [ -n "$f" ] && [ -s "$f" ] && printf '%s' "$f"
+}
+
+account_export_env() { # provider — apply the selected account to this process
+  local provider root file token
   provider=$(_account_provider "${1:-}") || return 1
-  # Claude stores its OAuth token in the macOS Keychain (a single per-user entry),
-  # not in $CLAUDE_CONFIG_DIR/.credentials.json — so an isolated config dir carries
-  # no token and forces a login prompt. Panels must always use the real logged-in
-  # account (the Keychain). Switching accounts swaps the Keychain (see cmd_account).
-  # Only Codex (file-based ~/.codex/auth.json) can be isolated per profile.
-  [ "$provider" = claude ] && return 0
+  if [ "$provider" = claude ]; then
+    file=$(_account_token_file) || return 0
+    [ -n "$file" ] || return 0
+    IFS= read -r token < "$file" 2>/dev/null || return 0
+    [ -n "$token" ] && export CLAUDE_CODE_OAUTH_TOKEN="$token"
+    return 0
+  fi
   root=$(_account_mutate active-root "$provider" 2>/dev/null) || return 1
   [ -n "$root" ] || return 0
   export CODEX_HOME="$root"
 }
 
 account_launch_prefix() { # provider — shell-safe prefix for commands sent to tmux
-  local provider root
+  local provider root file
   provider=$(_account_provider "${1:-}") || return 1
-  [ "$provider" = claude ] && return 0   # Claude always uses the real Keychain login (see account_export_env)
+  if [ "$provider" = claude ]; then
+    file=$(_account_token_file) || return 0
+    # Reference the file, never the token itself — send-keys text lands in scrollback.
+    [ -n "$file" ] && printf 'env CLAUDE_CODE_OAUTH_TOKEN="$(cat %q)" ' "$file"
+    return 0
+  fi
   root=$(_account_mutate active-root "$provider" 2>/dev/null) || return 1
   [ -n "$root" ] || return 0
   printf 'env CODEX_HOME=%q ' "$root"
@@ -211,9 +272,9 @@ _account_resolve() { _account_mutate resolve "$1" "${2:-active}"; }
 _account_connected() { # provider id root
   local provider="$1" id="$2" root="$3"
   if [ "$provider" = claude ]; then
-    if [ "$id" = default ]; then claude auth status --json 2>/dev/null
-    else CLAUDE_CONFIG_DIR="$root" claude auth status --json 2>/dev/null; fi \
-      | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*true'
+    # 'default' = whatever claude is logged in as; other profiles = a stored token.
+    if [ "$id" = default ]; then claude auth status --json 2>/dev/null | grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*true'
+    else [ -s "$root/oauth-token" ]; fi
   else
     if [ "$id" = default ]; then codex login status >/dev/null 2>&1
     else CODEX_HOME="$root" codex login status >/dev/null 2>&1; fi
@@ -223,15 +284,49 @@ _account_connected() { # provider id root
 _account_identity() { # provider id root — identity<TAB>plan
   local provider="$1" id="$2" root="$3"
   if [ "$provider" = claude ]; then
-    if [ "$id" = default ]; then claude auth status --json 2>/dev/null
-    else CLAUDE_CONFIG_DIR="$root" claude auth status --json 2>/dev/null; fi | node -e '
-      let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s); process.stdout.write(`${x.email||"Connected"}\t${x.subscriptionType||""}`)}catch{}})'
+    if [ "$id" = default ]; then
+      claude auth status --json 2>/dev/null | node -e '
+        let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s); process.stdout.write(`${x.email||"Connected"}\t${x.subscriptionType||""}`)}catch{}})'
+    else
+      node -e '
+        const fs=require("fs");
+        try { const m=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.stdout.write(`${m.email||"Connected"}\t${m.plan||""}`); } catch { process.stdout.write("Connected\t"); }
+      ' "$root/oauth-token.meta.json"
+    fi
   else
     node - "$root/auth.json" <<'NODE'
 const fs=require('fs'); const file=process.argv[2];
 try { const x=JSON.parse(fs.readFileSync(file,'utf8')); const p=JSON.parse(Buffer.from((x.tokens?.id_token||'').split('.')[1]||'', 'base64url')); const a=p['https://api.openai.com/auth']||{}; process.stdout.write(`${p.email||p.name||'Connected'}\t${a.chatgpt_plan_type||''}`); } catch {}
 NODE
   fi
+}
+
+_account_token_identity() { # token — email<TAB>plan (ask the API, else fall back to the live identity file)
+  local token="$1" out
+  out=$(CLAUDE_CODE_OAUTH_TOKEN="$token" claude auth status --json 2>/dev/null | node -e '
+    let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{try{const x=JSON.parse(s); if(x.email) process.stdout.write(`${x.email}\t${x.subscriptionType||""}`)}catch{}})')
+  [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+  node -e '
+    const fs=require("os"),p=require("path");
+    try { const d=JSON.parse(require("fs").readFileSync(p.join(fs.homedir(),".claude.json"),"utf8")); const a=d.oauthAccount||{}; process.stdout.write(`${a.emailAddress||""}\t${a.organizationType==="claude_max"?"max":(a.organizationType||"").replace("claude_","")}`); } catch {}'
+}
+
+_account_token_capture() { # id — run `claude setup-token` interactively, store the long-lived token
+  local id="$1" tmp token email plan
+  command -v claude >/dev/null 2>&1 || { warn "claude CLI is not installed"; return 1; }
+  [ -t 0 ] || { warn "this needs an interactive terminal"; return 1; }
+  tmp=$(mktemp "${TMPDIR:-/tmp}/loomo-token.XXXXXX") || return 1
+  chmod 600 "$tmp" 2>/dev/null
+  note "log in as the account you want to add — loomo stores the long-lived token it prints"
+  # script(1) gives setup-token a pty, so its prompts stay interactive while we capture the output.
+  script -q "$tmp" claude setup-token || true
+  token=$(LC_ALL=C grep -oE 'sk-ant-oat[0-9]{2}-[A-Za-z0-9_-]+' "$tmp" 2>/dev/null | tail -1)
+  rm -f "$tmp"
+  [ -n "$token" ] || { warn "no token was issued (login may not have completed)"; return 1; }
+  IFS=$'\t' read -r email plan <<< "$(_account_token_identity "$token")"
+  LOOMO_TOKEN_IN="$token" LOOMO_TOKEN_EMAIL="$email" LOOMO_TOKEN_PLAN="$plan" \
+    _account_mutate tok-save claude "$id" >/dev/null || { warn "could not store the token"; return 1; }
+  ok "token stored · ${email:-connected}${plan:+ · $plan}"
 }
 
 _account_login() { # provider id/index action
@@ -249,15 +344,18 @@ _account_login() { # provider id/index action
 
 _account_list() {
   local id label active root identity plan mark status email hasTok
-  # Claude — Keychain/bundle based (no per-profile config isolation on macOS).
+  # Claude — long-lived tokens injected at launch (CLAUDE_CODE_OAUTH_TOKEN).
   echo ""; printf '  Claude\n'
   while IFS=$'\t' read -r id label active email plan hasTok; do
     mark=" "; [ "$active" = 1 ] && mark="*"
     if ! command -v claude >/dev/null 2>&1; then identity="$label"; plan=""; status="CLI not installed"
-    elif [ "$hasTok" = 1 ]; then identity="${email:-$label}"; status="connected"
-    else identity="$label"; plan=""; status="login required"; fi
+    elif [ "$hasTok" = 1 ]; then identity="${email:-$label}"; status="ready"
+    elif [ "$id" = default ]; then
+      IFS=$'\t' read -r identity plan <<< "$(_account_identity claude default '')"
+      identity="${identity:-$label}"; status="current login"
+    else identity="$label"; plan=""; status="needs setup"; fi
     printf '  %s %-12s  %-30s  %s%s\n' "$mark" "$id" "$identity" "$status" "${plan:+ · $plan}"
-  done < <(_account_mutate kc-rows claude)
+  done < <(_account_mutate tok-rows claude)
   # Codex — file-isolation based (~/.codex/auth.json), unchanged.
   echo ""; printf '  Codex\n'
   while IFS=$'\t' read -r id label active root; do
@@ -281,14 +379,12 @@ cmd_account() {
       provider=$(_account_provider "$provider") || { echo "usage: loomo account add <claude|codex>"; return 2; }
       command -v "$provider" >/dev/null 2>&1 || { warn "$provider CLI is not installed"; return 1; }
       if [ "$provider" = claude ]; then
-        _account_mutate kc-capture claude >/dev/null 2>&1 || true   # snapshot the current login before it's replaced
         result=$(_account_mutate add claude) || return 1
         IFS=$'\t' read -r id root <<< "$result"
         ok "created claude profile · $id"
-        note "log in as the NEW Claude account in the browser…"
-        claude auth login || { warn "login did not complete · loomo account use claude $id"; return 1; }
-        if result=$(_account_mutate kc-select claude "$id" 2>/dev/null); then ok "claude active account · $id · ${result#*$'\t'}"
-        else warn "could not adopt the new login · loomo account use claude $id"; fi
+        _account_token_capture "$id" || { warn "profile kept · finish it later with: loomo account login claude $id"; return 1; }
+        _account_mutate tok-use claude "$id" >/dev/null 2>&1 \
+          && { ok "claude active account · $id"; note "new panes and restarted sessions use this account"; }
       else
         result=$(_account_mutate add codex) || return 1
         IFS=$'\t' read -r id root <<< "$result"
@@ -301,12 +397,14 @@ cmd_account() {
       provider=$(_account_provider "$provider") || { echo "usage: loomo account $action <claude|codex> [id|number]"; return 2; }
       if [ "$provider" = claude ]; then
         command -v claude >/dev/null 2>&1 || { warn "claude CLI is not installed"; return 1; }
+        result=$(_account_resolve claude "${target:-active}") || { warn "account profile not found: ${target:-active}"; return 1; }
+        IFS=$'\t' read -r id root <<< "$result"
         if [ "$action" = login ]; then
-          claude auth login || { warn "login did not complete"; return 1; }
-          _account_mutate kc-select claude "${target:-active}" >/dev/null 2>&1 || true
-          ok "claude login complete"
+          if [ "$id" = default ]; then claude auth login; else _account_token_capture "$id" || return 1; fi
         else
-          claude auth logout
+          # Drop this profile's stored token; 'default' means the real CLI login.
+          if [ "$id" = default ]; then claude auth logout
+          else _account_mutate tok-forget claude "$id" >/dev/null && ok "claude token removed · $id"; fi
         fi
       else
         _account_login codex "${target:-active}" "$action"
@@ -317,11 +415,11 @@ cmd_account() {
       [ -n "$target" ] || { echo "usage: loomo account use <claude|codex> <id|number>"; return 2; }
       command -v "$provider" >/dev/null 2>&1 || { warn "$provider CLI is not installed"; return 1; }
       if [ "$provider" = claude ]; then
-        result=$(_account_mutate kc-select claude "$target"); rc=$?
+        result=$(_account_mutate tok-use claude "$target" 2>/dev/null); rc=$?
         case "$rc" in
-          0) ok "claude active account · $target · ${result#*$'\t'}"
+          0) ok "claude active account · $result"
              note "new panes and restarted sessions use this account; existing panes keep their current login" ;;
-          4) warn "this account has no saved login yet · loomo account login claude $target"; return 1 ;;
+          4) warn "this account has no stored token yet · loomo account login claude $target"; return 1 ;;
           3) warn "account profile not found: $target"; return 1 ;;
           *) warn "account switch failed"; return 1 ;;
         esac
@@ -334,8 +432,19 @@ cmd_account() {
         note "new panes and restarted sessions use this account; existing panes keep their current login"
       fi
       ;;
+    remove|rm)
+      provider=$(_account_provider "$provider") || { echo "usage: loomo account remove <claude|codex> <id|number>"; return 2; }
+      [ -n "$target" ] || { echo "usage: loomo account remove <claude|codex> <id|number>"; return 2; }
+      result=$(_account_mutate remove "$provider" "$target" 2>/dev/null); rc=$?
+      case "$rc" in
+        0) ok "$provider profile removed · $result" ;;
+        6) warn "the default profile cannot be removed"; return 1 ;;
+        3) warn "account profile not found: $target"; return 1 ;;
+        *) warn "could not remove the profile"; return 1 ;;
+      esac
+      ;;
     *)
-      echo "usage: loomo account [list|add|use|login|logout]"
+      echo "usage: loomo account [list|add|use|login|logout|remove]"
       return 2
       ;;
   esac

@@ -730,10 +730,25 @@ EOF
     command -v codex >/dev/null 2>&1 && { if codex login status >/dev/null 2>&1; then CODEX_AUTH=connected; else CODEX_AUTH=signed-out; fi; }
     _settings_accounts_refresh
   }
+  _split6() { # split tab-separated fields keeping empty ones (bash read collapses IFS whitespace)
+    local s="$1"
+    F1=${s%%$'\t'*}; s=${s#*$'\t'}; F2=${s%%$'\t'*}; s=${s#*$'\t'}
+    F3=${s%%$'\t'*}; s=${s#*$'\t'}; F4=${s%%$'\t'*}; s=${s#*$'\t'}
+    F5=${s%%$'\t'*}; s=${s#*$'\t'}; F6=${s%%$'\t'*}
+  }
   _settings_accounts_refresh() { # populate CLAUDE_ACCT / CODEX_ACCT caches (id\tlabel\tactive\tident\tplan\thasToken)
     local ln id label active root ident plan
     CLAUDE_ACCT=(); CODEX_ACCT=()
-    while IFS= read -r ln; do [ -n "$ln" ] && CLAUDE_ACCT+=("$ln"); done < <(_account_mutate kc-rows claude 2>/dev/null)
+    # Claude rows come from the long-lived token store; 'default' shows the live CLI login.
+    while IFS= read -r ln; do
+      [ -n "$ln" ] || continue
+      _split6 "$ln"
+      if [ "$F6" != 1 ] && [ "$F1" = default ] && command -v claude >/dev/null 2>&1; then
+        IFS=$'\t' read -r ident plan <<< "$(_account_identity claude default '')"
+        [ -n "$ident" ] && ln="$F1"$'\t'"$F2"$'\t'"$F3"$'\t'"$ident"$'\t'"$plan"$'\t'2   # 2 = live login, no stored token
+      fi
+      CLAUDE_ACCT+=("$ln")
+    done < <(_account_mutate tok-rows claude 2>/dev/null)
     while IFS=$'\t' read -r id label active root; do
       [ -n "$id" ] || continue
       if command -v codex >/dev/null 2>&1 && _account_connected codex "$id" "$root"; then
@@ -768,9 +783,12 @@ EOF
     IFS=$'\t' read -r id root <<< "$result"
     log="$CONFIG_DIR/${provider}-${id}-auth.log"
     if [ "$provider" = claude ]; then
-      _account_mutate kc-capture claude >/dev/null 2>&1 || true   # save current login before the browser replaces it
-      nohup claude auth login </dev/null >"$log" 2>&1 &
-      SETTINGS_MSG="Claude 계정 추가 · 브라우저에서 새 계정으로 로그인한 뒤 그 계정 줄의 [Login]을 클릭하세요"
+      # setup-token is interactive, so run it in its own terminal window; the dashboard owns the alt-screen.
+      if open_terminal_command "$(printf '%q account login claude %q' "$0" "$id")" 2>/dev/null; then
+        SETTINGS_MSG="Claude 계정 추가 · 새 터미널에서 로그인하면 토큰이 저장돼요 · 끝나면 [Refresh status]"
+      else
+        SETTINGS_MSG="Claude 계정 추가됨 · 터미널에서 'loomo account login claude $id' 를 실행하세요"
+      fi
     else
       nohup env CODEX_HOME="$root" codex login </dev/null >"$log" 2>&1 &
       SETTINGS_MSG="Codex 계정 추가 · 브라우저 승인 후 해당 계정을 클릭해 선택하세요"
@@ -784,7 +802,8 @@ EOF
     resolved=$(_account_resolve "$provider" "$id" 2>/dev/null) || { SETTINGS_MSG="Account profile not found"; return 1; }
     IFS=$'\t' read -r id root <<< "$resolved"
     if [ "$provider" = claude ]; then
-      if _account_mutate kc-rows claude 2>/dev/null | LC_ALL=C awk -F'\t' -v id="$id" '$1==id && $6==1{found=1} END{exit !found}'; then
+      # A stored token (or 'default' = the live login) can be switched to right away.
+      if [ "$id" = default ] || _account_mutate tok-rows claude 2>/dev/null | LC_ALL=C awk -F'\t' -v id="$id" '$1==id && $6==1{found=1} END{exit !found}'; then
         ACCT_SWITCH="$provider|$id"
         SETTINGS_MSG=""
       else
@@ -806,10 +825,10 @@ EOF
     IFS='|' read -r provider id <<< "$1"
     ACCT_SWITCH=""
     if [ "$provider" = claude ]; then
-      result=$(_account_mutate kc-select claude "$id" 2>/dev/null); rc=$?
+      result=$(_account_mutate tok-use claude "$id" 2>/dev/null); rc=$?
       case "$rc" in
-        0) SETTINGS_MSG="Claude 계정 전환 완료 → ${result#*$'\t'} · 새 패널·재시작 세션부터 적용" ;;
-        4) SETTINGS_MSG="이 계정은 저장된 로그인이 없어요 · 먼저 Login 하세요" ;;
+        0) SETTINGS_MSG="Claude 계정 전환 완료 → $result · 새 패널·재시작 세션부터 적용" ;;
+        4) SETTINGS_MSG="이 계정은 저장된 토큰이 없어요 · 먼저 Login 하세요" ;;
         3) SETTINGS_MSG="계정 프로필을 찾지 못했어요" ;;
         *) SETTINGS_MSG="계정 전환에 실패했어요" ;;
       esac
@@ -827,20 +846,40 @@ EOF
     _settings_accounts_refresh
     mtop=0
   }
+  _settings_account_logout() { # provider|id — drop this account's stored login
+    local provider id resolved root
+    IFS='|' read -r provider id <<< "$1"
+    ACCT_SWITCH=""
+    if [ "$provider" = claude ]; then
+      if [ "$id" = default ]; then
+        nohup claude auth logout </dev/null >"$CONFIG_DIR/claude-auth.log" 2>&1 &
+        CLAUDE_AUTH=signed-out
+        SETTINGS_MSG="Claude CLI 로그아웃 시작 · 저장된 토큰 계정은 그대로예요"
+      elif _account_mutate tok-forget claude "$id" >/dev/null 2>&1; then
+        SETTINGS_MSG="Claude 계정 연결 해제 · 저장된 토큰을 지웠어요"
+      else
+        SETTINGS_MSG="계정 연결 해제에 실패했어요"
+      fi
+    else
+      resolved=$(_account_resolve codex "$id" 2>/dev/null) || { SETTINGS_MSG="계정 프로필을 찾지 못했어요"; return 1; }
+      IFS=$'\t' read -r id root <<< "$resolved"
+      if [ "$id" = default ]; then nohup codex logout </dev/null >"$CONFIG_DIR/codex-auth.log" 2>&1 &
+      else nohup env CODEX_HOME="$root" codex logout </dev/null >"$CONFIG_DIR/codex-${id}-auth.log" 2>&1 & fi
+      SETTINGS_MSG="Codex 로그아웃 시작 · 끝나면 [Refresh status]"
+    fi
+    _settings_accounts_refresh
+    mtop=0
+  }
   _settings_account_login() { # provider|id — login, or adopt a completed Claude browser login
     local provider id owner_id live_email resolved root log
     IFS='|' read -r provider id <<< "$1"
     ACCT_SWITCH=""
     if [ "$provider" = claude ]; then
-      IFS=$'\t' read -r owner_id live_email <<< "$(_account_mutate kc-live-owner claude 2>/dev/null)"
-      if [ -z "$owner_id" ] && [ -n "$live_email" ]; then
-        # A finished login is sitting unclaimed in the Keychain → adopt it into this profile.
-        if _account_mutate kc-select claude "$id" >/dev/null 2>&1; then SETTINGS_MSG="Claude 계정 연결 완료 → $live_email"
-        else SETTINGS_MSG="계정 적용에 실패했어요"; fi
+      # Issuing a long-lived token needs an interactive terminal — hand it its own window.
+      if open_terminal_command "$(printf '%q account login claude %q' "$0" "$id")" 2>/dev/null; then
+        SETTINGS_MSG="새 터미널에서 이 계정으로 로그인하세요 · 끝나면 [Refresh status]"
       else
-        _account_mutate kc-capture claude >/dev/null 2>&1 || true   # keep the current login before it's replaced
-        nohup claude auth login </dev/null >"$CONFIG_DIR/claude-${id}-auth.log" 2>&1 &
-        SETTINGS_MSG="Claude 로그인 시작 · 브라우저 승인 후 이 계정의 [Login]을 다시 클릭하세요"
+        SETTINGS_MSG="터미널에서 'loomo account login claude $id' 를 실행하세요"
       fi
     else
       resolved=$(_account_resolve codex "$id" 2>/dev/null) || { SETTINGS_MSG="계정 프로필을 찾지 못했어요"; return 1; }
@@ -1228,52 +1267,37 @@ EOF
         _main_row "  ${C_B}AI models${C_X}  ${C_D}[Refresh status]${C_X}" authrefresh
         _main_row "  ${C_D}새 패널과 재시작 세션은 선택된 계정으로 열립니다${C_X}"
         _main_row ""
-        local ap_provider ap_id ap_label ap_active ap_identity ap_plan ap_token ap_mark ap_detail ap_action ap_row
+        local ap_provider ap_id ap_label ap_active ap_identity ap_plan ap_token ap_mark ap_detail ap_action ap_row ap_plain ap_logout_x
+        local ap_rows=()
         for ap_provider in claude codex; do
-          if [ "$ap_provider" = claude ]; then
-            _main_row "  ${C_B}Claude${C_X}"
-            for ap_row in "${CLAUDE_ACCT[@]}"; do
-              IFS=$'\t' read -r ap_id ap_label ap_active ap_identity ap_plan ap_token <<< "$ap_row"
-              ap_mark="${C_D}○${C_X}"; ap_action="${C_G}[Login]${C_X}"
-              [ "$ap_active" = 1 ] && { ap_mark="${C_G}${C_B}●${C_X}"; ap_action="${C_D}사용 중${C_X}"; }
-              [ "$ap_active" != 1 ] && [ "$ap_token" = 1 ] && ap_action="${C_C}[전환]${C_X}"
-              ap_detail="${ap_identity:-$ap_label}"; [ -n "$ap_plan" ] && ap_detail="$ap_detail · $ap_plan"
-              if [ "$ap_active" = 1 ]; then
-                _main_row "    $ap_mark ${C_B}$ap_detail${C_X}  ${C_D}$ap_id${C_X}  $ap_action"
-              elif [ "$ap_token" = 1 ]; then
-                _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctswitch "$ap_provider|$ap_id"
-              else
-                _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctlogin "$ap_provider|$ap_id"
-              fi
-              if [ "$ACCT_SWITCH" = "$ap_provider|$ap_id" ]; then
-                _main_row "      ${C_Y}이 계정으로 전환할까요?${C_X}"
-                _main_row "      ${C_D}[취소]${C_X}" acctswitchcancel
-                _main_row "      ${C_C}${C_B}[전환]${C_X}" acctswitchconfirm "$ap_provider|$ap_id"
-              fi
-            done
-          else
-            _main_row ""
-            _main_row "  ${C_B}Codex${C_X}"
-            for ap_row in "${CODEX_ACCT[@]}"; do
-              IFS=$'\t' read -r ap_id ap_label ap_active ap_identity ap_plan ap_token <<< "$ap_row"
-              ap_mark="${C_D}○${C_X}"; ap_action="${C_G}[Login]${C_X}"
-              [ "$ap_active" = 1 ] && { ap_mark="${C_G}${C_B}●${C_X}"; ap_action="${C_D}사용 중${C_X}"; }
-              [ "$ap_active" != 1 ] && [ "$ap_token" = 1 ] && ap_action="${C_C}[전환]${C_X}"
-              ap_detail="${ap_identity:-$ap_label}"; [ -n "$ap_plan" ] && ap_detail="$ap_detail · $ap_plan"
-              if [ "$ap_active" = 1 ]; then
-                _main_row "    $ap_mark ${C_B}$ap_detail${C_X}  ${C_D}$ap_id${C_X}  $ap_action"
-              elif [ "$ap_token" = 1 ]; then
-                _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctswitch "$ap_provider|$ap_id"
-              else
-                _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctlogin "$ap_provider|$ap_id"
-              fi
-              if [ "$ACCT_SWITCH" = "$ap_provider|$ap_id" ]; then
-                _main_row "      ${C_Y}이 계정으로 전환할까요?${C_X}"
-                _main_row "      ${C_D}[취소]${C_X}" acctswitchcancel
-                _main_row "      ${C_C}${C_B}[전환]${C_X}" acctswitchconfirm "$ap_provider|$ap_id"
-              fi
-            done
-          fi
+          if [ "$ap_provider" = claude ]; then _main_row "  ${C_B}Claude${C_X}"
+          else _main_row ""; _main_row "  ${C_B}Codex${C_X}"; fi
+          if [ "$ap_provider" = claude ]; then ap_rows=(${CLAUDE_ACCT[@]+"${CLAUDE_ACCT[@]}"})
+          else ap_rows=(${CODEX_ACCT[@]+"${CODEX_ACCT[@]}"}); fi
+          for ap_row in ${ap_rows[@]+"${ap_rows[@]}"}; do
+            _split6 "$ap_row"
+            ap_id=$F1; ap_label=$F2; ap_active=$F3; ap_identity=$F4; ap_plan=$F5; ap_token=$F6
+            # ap_token: 1 = stored login, 2 = the live CLI login (default profile), 0 = none
+            ap_mark="${C_D}○${C_X}"; ap_action="${C_G}[Login]${C_X}"
+            [ "$ap_active" = 1 ] && ap_mark="${C_G}${C_B}●${C_X}"
+            if [ "$ap_active" = 1 ]; then ap_action="${C_D}사용 중${C_X}"
+            elif [ "$ap_token" != 0 ]; then ap_action="${C_C}[전환]${C_X}"; fi
+            ap_detail="${ap_identity:-$ap_label}"; [ -n "$ap_plan" ] && ap_detail="$ap_detail · $ap_plan"
+            if [ "$ap_token" = 0 ]; then
+              _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctlogin "$ap_provider|$ap_id"
+            else
+              # One row, two hit zones: everything left of [Logout] switches, the rest logs out.
+              ap_plain="    ○ $ap_detail  $ap_id  "
+              [ "$ap_active" = 1 ] && ap_plain="    ● $ap_detail  $ap_id  사용 중  " || ap_plain="$ap_plain[전환]  "
+              _fit_cols "$ap_plain" 10000; ap_logout_x=$((FIT_WIDTH+1))
+              _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action  ${C_R}[Logout]${C_X}" acctrow "$ap_provider|$ap_id|$ap_active|$ap_logout_x"
+            fi
+            if [ "$ACCT_SWITCH" = "$ap_provider|$ap_id" ]; then
+              _main_row "      ${C_Y}이 계정으로 전환할까요?${C_X}  ${C_D}모든 새 패널이 이 계정으로 열립니다${C_X}"
+              _main_row "      ${C_D}[취소]${C_X}" acctswitchcancel
+              _main_row "      ${C_C}${C_B}[전환]${C_X}" acctswitchconfirm "$ap_provider|$ap_id"
+            fi
+          done
           _main_row "    ${C_C}[＋ Add $ap_provider account]${C_X}" accountadd "$ap_provider"
         done
         _main_row "  ${C_D}CLI: loomo account list · use <provider> <id>${C_X}"
@@ -1821,6 +1845,13 @@ EOF
                               acctswitchconfirm) _settings_account_switch "$xarg" ;;
                               acctswitchcancel) ACCT_SWITCH=""; SETTINGS_MSG=""; mtop=0 ;;
                               acctlogin) _settings_account_login "$xarg" ;;
+                              acctrow) local ar_provider ar_id ar_active ar_logout_x
+                                       IFS='|' read -r ar_provider ar_id ar_active ar_logout_x <<< "$xarg"
+                                       if [ "${mx:-0}" -ge "${ar_logout_x:-9999}" ]; then
+                                         _settings_account_logout "$ar_provider|$ar_id"
+                                       elif [ "$ar_active" != 1 ]; then
+                                         ACCT_SWITCH="$ar_provider|$ar_id"; SETTINGS_MSG=""; mtop=0
+                                       fi ;;
                               settingsskill) _settings_skill_start; mtop=0 ;;
                               settingsskilldelete) SKILL_DELETE="$xarg"; SETTINGS_MSG=""; mtop=0 ;;
                               settingsskillcancel) SKILL_DELETE=""; mtop=0 ;;
