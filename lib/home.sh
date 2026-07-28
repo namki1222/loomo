@@ -1333,15 +1333,14 @@ EOF
             if [ "$ap_active" = 1 ]; then ap_action="${C_D}사용 중${C_X}"
             elif [ "$ap_token" != 0 ]; then ap_action="${C_C}[전환]${C_X}"; fi
             ap_detail="${ap_identity:-$ap_label}"; [ -n "$ap_plan" ] && ap_detail="$ap_detail · $ap_plan"
-            if [ "$ap_token" = 0 ]; then
-              _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action" acctlogin "$ap_provider|$ap_id"
-            else
-              # One row, two hit zones: everything left of [Logout] switches, the rest logs out.
-              ap_plain="    ○ $ap_detail  $ap_id  "
-              [ "$ap_active" = 1 ] && ap_plain="    ● $ap_detail  $ap_id  사용 중  " || ap_plain="$ap_plain[전환]  "
-              _fit_cols "$ap_plain" 10000; ap_logout_x=$((FIT_WIDTH+1))
-              _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action  ${C_R}[Logout]${C_X}" acctrow "$ap_provider|$ap_id|$ap_active|$ap_logout_x"
-            fi
+            # Every account can be removed, so each row carries [Logout]. Two hit
+            # zones: left of it switches (or finishes a login), the rest signs out.
+            if [ "$ap_active" = 1 ]; then ap_plain="    ● $ap_detail  $ap_id  사용 중  "
+            elif [ "$ap_token" != 0 ]; then ap_plain="    ○ $ap_detail  $ap_id  [전환]  "
+            else ap_plain="    ○ $ap_detail  $ap_id  [Login]  "; fi
+            _fit_cols "$ap_plain" 10000; ap_logout_x=$((FIT_WIDTH+1))
+            _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action  ${C_R}[Logout]${C_X}" \
+              acctrow "$ap_provider|$ap_id|$ap_active|$ap_token|$ap_logout_x"
             if [ "$ACCT_SWITCH" = "$ap_provider|$ap_id" ]; then
               _main_row "      ${C_Y}이 계정으로 전환할까요?${C_X}  ${C_D}모든 새 패널이 이 계정으로 열립니다${C_X}"
               _main_row "      ${C_D}[취소]${C_X}" acctswitchcancel
@@ -1896,10 +1895,12 @@ EOF
                               acctswitchconfirm) _settings_account_switch "$xarg" ;;
                               acctswitchcancel) ACCT_SWITCH=""; SETTINGS_MSG=""; mtop=0 ;;
                               acctlogin) _settings_account_login "$xarg" ;;
-                              acctrow) local ar_provider ar_id ar_active ar_logout_x
-                                       IFS='|' read -r ar_provider ar_id ar_active ar_logout_x <<< "$xarg"
+                              acctrow) local ar_provider ar_id ar_active ar_token ar_logout_x
+                                       IFS='|' read -r ar_provider ar_id ar_active ar_token ar_logout_x <<< "$xarg"
                                        if [ "${mx:-0}" -ge "${ar_logout_x:-9999}" ]; then
                                          _settings_account_logout "$ar_provider|$ar_id"
+                                       elif [ "$ar_token" = 0 ]; then
+                                         _settings_account_login "$ar_provider|$ar_id"
                                        elif [ "$ar_active" != 1 ]; then
                                          ACCT_SWITCH="$ar_provider|$ar_id"; SETTINGS_MSG=""; mtop=0
                                        fi ;;
