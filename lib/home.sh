@@ -311,6 +311,7 @@ _dashboard() {
   local ARRANGE_MODE=0 ARRANGE_MSG=""
   local SETTINGS_PAGE=main SETTINGS_MSG="" SKILL_DELETE="" ACCT_SWITCH="" CLAUDE_AUTH=unknown CODEX_AUTH=unknown
   local CLAUDE_ACCT=() CODEX_ACCT=()   # cached account rows for the Settings render (id\tlabel\tactive\tident\tplan\thasToken)
+  local RECENT_MODEL=""                # concrete model the newest claude conversation ran on
   local DETAIL_SESSION="" DETAIL_ADD=0 DETAIL_EDIT=0 DETAIL_DELETE=0 DETAIL_PRESET="" DETAIL_MSG="" EDIT_SESSION="" EDIT_ROLE=""
   local HOVER_AREA="" HOVER_INDEX=-1 HOVER_GROUP="" LAST_CLICK_SESSION="" LAST_CLICK_TIME=0
   local ADOPT_FILTER=claude ADOPT_LOADED=0 ADOPT_MSG="" ADOPT_SELECTED=""
@@ -739,6 +740,7 @@ EOF
   _settings_accounts_refresh() { # populate CLAUDE_ACCT / CODEX_ACCT caches (id\tlabel\tactive\tident\tplan\thasToken)
     local ln id label active root ident plan
     CLAUDE_ACCT=(); CODEX_ACCT=()
+    RECENT_MODEL=$(_loomo_recent_model)
     # Claude rows come from the long-lived token store; 'default' shows the live CLI login.
     while IFS= read -r ln; do
       [ -n "$ln" ] || continue
@@ -1279,13 +1281,22 @@ EOF
         _main_row "  ${C_B}AI models${C_X}  ${C_D}[Refresh status]${C_X}" authrefresh
         _main_row "  ${C_D}새 패널과 재시작 세션은 선택된 계정으로 열립니다${C_X}"
         _main_row ""
-        local ap_provider ap_id ap_label ap_active ap_identity ap_plan ap_token ap_mark ap_detail ap_action ap_row ap_plain ap_logout_x ap_model
+        local ap_provider ap_id ap_label ap_active ap_identity ap_plan ap_token ap_mark ap_detail ap_action ap_row ap_plain ap_logout_x ap_model ap_model_note
         local ap_rows=()
         for ap_provider in claude codex; do
           if [ "$ap_provider" = claude ]; then _main_row "  ${C_B}Claude${C_X}"
           else _main_row ""; _main_row "  ${C_B}Codex${C_X}"; fi
           ap_model=$(_loomo_model "$ap_provider"); [ -n "$ap_model" ] || ap_model="auto"
-          _main_row "    ${C_D}Model${C_X}  ${C_C}${C_B}[$ap_model]${C_X}  ${C_D}클릭해서 변경 · 모든 새 패널에 적용${C_X}" acctmodel "$ap_provider"
+          # Aliases ('opus') and 'auto' only say which family — show the concrete
+          # model the newest conversation actually ran on so the version is visible.
+          ap_model_note=""
+          if [ "$ap_provider" = claude ] && [ -n "$RECENT_MODEL" ]; then
+            case "$ap_model" in
+              *-*[0-9]*) : ;;   # already a full model name
+              *) ap_model_note="  ${C_D}최근 실행: ${RECENT_MODEL}${C_X}" ;;
+            esac
+          fi
+          _main_row "    ${C_D}Model${C_X}  ${C_C}${C_B}[$ap_model]${C_X}${ap_model_note}  ${C_D}클릭해서 변경${C_X}" acctmodel "$ap_provider"
           if [ "$ap_provider" = claude ]; then ap_rows=(${CLAUDE_ACCT[@]+"${CLAUDE_ACCT[@]}"})
           else ap_rows=(${CODEX_ACCT[@]+"${CODEX_ACCT[@]}"}); fi
           for ap_row in ${ap_rows[@]+"${ap_rows[@]}"}; do

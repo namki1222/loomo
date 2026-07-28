@@ -72,6 +72,36 @@ _loomo_model() { # $1=claude|codex
   case "$m" in auto|"") return ;; *[!A-Za-z0-9._-]*) return ;; esac
   printf '%s' "$m"
 }
+# Concrete model the newest claude conversation actually ran on. Aliases like
+# 'opus' only say "the latest one", so this shows which version that resolved to.
+_loomo_recent_model() {
+  node -e '
+    const fs=require("fs"), os=require("os"), path=require("path");
+    const root=path.join(os.homedir(),".claude","projects");
+    let newest=null, newestAt=0;
+    let dirs=[]; try { dirs=fs.readdirSync(root); } catch { process.exit(0); }
+    for (const d of dirs) {
+      let files=[]; try { files=fs.readdirSync(path.join(root,d)); } catch { continue; }
+      for (const f of files) {
+        if (!f.endsWith(".jsonl")) continue;
+        const p=path.join(root,d,f);
+        try { const s=fs.statSync(p); if (s.mtimeMs>newestAt) { newestAt=s.mtimeMs; newest=p; } } catch {}
+      }
+    }
+    if (!newest) process.exit(0);
+    // Read only the tail — these transcripts grow to many MB.
+    let buf="";
+    try {
+      const fd=fs.openSync(newest,"r"); const size=fs.statSync(newest).size;
+      const len=Math.min(size, 256*1024); const b=Buffer.alloc(len);
+      fs.readSync(fd, b, 0, len, size-len); fs.closeSync(fd); buf=b.toString("utf8");
+    } catch { process.exit(0); }
+    const lines=buf.split("\n").reverse();
+    for (const line of lines) {
+      try { const o=JSON.parse(line); const m=o.message&&o.message.model; if (m) { process.stdout.write(m); break; } } catch {}
+    }
+  ' 2>/dev/null
+}
 # OSC 10/11 that forces a window's fg/bg for the chosen theme; empty for auto.
 _theme_osc() {
   case "$(_loomo_theme)" in
