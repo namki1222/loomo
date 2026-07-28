@@ -134,7 +134,7 @@ loomo               # 检查/安装 Homebrew → tmux → Claude Code → Codex�
 ### Settings
 
 - 选择负责在项目间路由请求的 Hub 会话。
-- 检查 Claude/Codex 认证状态，并开始或撤销登录。
+- 在 **AI models** 下，每个模型会按邮箱列出它的账号。点击某个账号即可让所有窗格以该账号运行，也可以用 **[＋ Add account]** 添加账号或退出登录。
 - 查看环境状态与用量。
 - 用 **[⟳ Sync now]** 刷新每个项目的协作约定 —— 无需 CLI。
 
@@ -189,6 +189,20 @@ loomo layout <project> tiled      # 更改窗格布局
 loomo list                        # 显示会话、角色与运行状态
 loomo rm <project>                # 移除项目配置
 ```
+
+### 切换账号
+
+注册多个订阅账号，并选择窗格使用哪一个。
+
+```bash
+loomo account list                     # 查看账号列表与当前生效的账号
+loomo account add claude               # 添加账号（浏览器登录一次）
+loomo account use claude <id>          # 切换 —— 即时生效，无需浏览器
+loomo account logout claude <id>       # 移除已保存的账号凭据
+loomo account remove claude <id>       # 彻底删除该配置
+```
+
+添加账号时登录一次并保存凭据，因此之后的切换是即时的；在仪表盘 **Settings → AI models** 列表中点击即可完成同样的切换。所选账号对**新打开或重启的窗格**生效，已在运行的窗格仍保持启动时的账号。`default` 配置表示"沿用 CLI 当前登录的账号"。
 
 ### 恢复与诊断
 

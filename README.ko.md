@@ -134,7 +134,7 @@ loomo               # Homebrew → tmux → Claude Code → Codex 확인/설치 
 ### Settings
 
 - 전체 요청을 라우팅할 Hub session을 지정한다.
-- Claude/Codex 로그인 상태를 확인하고 인증을 시작하거나 해제한다.
+- **AI models** 아래에 모델별 계정이 이메일로 나열된다. 계정을 클릭하면 모든 패널이 그 계정으로 실행되고, **[＋ Add account]** 로 계정을 추가하거나 로그아웃할 수 있다.
 - 환경 상태와 사용량을 확인한다.
 - **[⟳ Sync now]** 로 모든 프로젝트의 협업 규약(CLAUDE.md/AGENTS.md)을 최신 템플릿으로 갱신한다.
 
@@ -189,6 +189,20 @@ loomo layout <프로젝트> tiled      # 패널 레이아웃 변경
 loomo list                        # 세션·역할·실행 상태 확인
 loomo rm <프로젝트>               # 프로젝트 설정 제거
 ```
+
+### 계정 전환
+
+구독 계정을 여러 개 등록해두고, 패널이 어떤 계정으로 돌지 고른다.
+
+```bash
+loomo account list                     # 계정 목록과 현재 활성 계정 확인
+loomo account add claude               # 계정 추가 (브라우저 로그인 1회)
+loomo account use claude <id>          # 전환 — 브라우저 없이 즉시
+loomo account logout claude <id>       # 저장된 계정 연결 해제
+loomo account remove claude <id>       # 프로필 자체를 삭제
+```
+
+계정을 추가할 때 한 번 로그인해 인증 정보를 저장하므로, 이후 전환은 즉시 이뤄진다. 대시보드 **Settings → AI models** 목록에서 클릭으로도 같은 전환이 된다. 선택한 계정은 **새로 열거나 재시작하는 패널**부터 적용되고, 이미 떠 있는 패널은 시작할 때의 계정을 유지한다. `default` 프로필은 "현재 CLI에 로그인된 계정 그대로"를 뜻한다.
 
 ### 복구와 진단
 

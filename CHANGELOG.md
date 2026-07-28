@@ -3,6 +3,15 @@
 All notable changes to this project are documented here.
 Format based on [Keep a Changelog](https://keepachangelog.com/); this project follows [SemVer](https://semver.org/).
 
+## [2.2.0] - 2026-07-28
+
+### Added
+- **Multiple Claude/Codex accounts, switchable from the dashboard.** Register more than one subscription account and pick which one every pane runs as — from **Settings → AI models**, where each model lists its accounts by email, or with `loomo account use <provider> <id>`. Selecting an account is instant: no browser round-trip, because loomo stores the account's credentials when you add it. Each account needs one initial login (`loomo account add claude` issues a long-lived token via `claude setup-token`); after that, switching is a click. New commands: `loomo account list | add | use | login | logout | remove`. The selection is shared with Loomo Studio.
+
+### Notes
+- Claude accounts are applied by injecting the selected account's long-lived token into every pane loomo launches (`CLAUDE_CODE_OAUTH_TOKEN`), leaving the macOS Keychain untouched. Rewriting the Keychain would not have held: it stores a single per-user entry, and any running pane refreshing its OAuth token (~8h) writes back and reverts the switch. Codex accounts stay isolated by `CODEX_HOME`. The `default` profile injects nothing and keeps using whatever the CLI is logged in as.
+- Switching applies to newly opened and restarted panes; panes already running keep the account they started with.
+
 ## [2.1.2] - 2026-07-20
 
 ### Fixed

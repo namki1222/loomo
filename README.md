@@ -134,7 +134,7 @@ Run `loomo` to open the dashboard. Nearly everything can be managed here with th
 ### Settings
 
 - Choose the Hub session that routes requests across projects.
-- Check Claude/Codex authentication and start or revoke login.
+- Under **AI models**, each model lists its accounts by email. Click one to make every pane run as that account, add another with **[＋ Add account]**, or sign one out.
 - View environment status and usage.
 - Refresh every project's collaboration convention with **[⟳ Sync now]** — no CLI needed.
 
@@ -189,6 +189,20 @@ loomo layout <project> tiled      # change the pane layout
 loomo list                        # show sessions, roles, and run state
 loomo rm <project>                # remove project configuration
 ```
+
+### Switch accounts
+
+Run several subscription accounts and choose which one your panes use.
+
+```bash
+loomo account list                     # show accounts and which one is active
+loomo account add claude               # add an account (one browser login)
+loomo account use claude <id>          # switch — instant, no browser
+loomo account logout claude <id>       # drop a stored account
+loomo account remove claude <id>       # delete the profile entirely
+```
+
+Adding an account logs in once and stores its credentials, so switching afterwards is instant — the dashboard's **Settings → AI models** list does the same thing with a click. The chosen account applies to newly opened and restarted panes; panes already running keep the account they started with. The `default` profile means "whatever the CLI is logged in as".
 
 ### Restore and diagnose
 
