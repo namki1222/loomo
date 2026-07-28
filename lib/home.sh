@@ -928,6 +928,18 @@ EOF
     else printf '1\n' > "$f"; SETTINGS_MSG="Claude bypass on · 위임 패널이 승인에서 안 멈춤 (새 패널부터)"; fi
     mtop=0
   }
+  _settings_model_cycle() { # $1=claude|codex — cycle the model every new pane launches with
+    local agent="$1" f="$CONFIG_DIR/model-$1" cur next
+    cur=$(_loomo_model "$agent"); [ -n "$cur" ] || cur=auto
+    if [ "$agent" = claude ]; then
+      case "$cur" in auto) next=opus ;; opus) next=sonnet ;; sonnet) next=haiku ;; *) next=auto ;; esac
+    else
+      case "$cur" in auto) next=gpt-5-codex ;; gpt-5-codex) next=gpt-5 ;; *) next=auto ;; esac
+    fi
+    mkdir -p "$CONFIG_DIR" 2>/dev/null; printf '%s\n' "$next" > "$f" 2>/dev/null
+    SETTINGS_MSG="$agent model → $next · 새 패널·재시작 세션부터 적용"
+    mtop=0
+  }
   _settings_theme_cycle() { # cycle loomo window theme auto → dark → light and apply live
     local f="$CONFIG_DIR/theme" next
     case "$(_loomo_theme)" in auto) next=dark ;; dark) next=light ;; *) next=auto ;; esac
@@ -1267,11 +1279,13 @@ EOF
         _main_row "  ${C_B}AI models${C_X}  ${C_D}[Refresh status]${C_X}" authrefresh
         _main_row "  ${C_D}새 패널과 재시작 세션은 선택된 계정으로 열립니다${C_X}"
         _main_row ""
-        local ap_provider ap_id ap_label ap_active ap_identity ap_plan ap_token ap_mark ap_detail ap_action ap_row ap_plain ap_logout_x
+        local ap_provider ap_id ap_label ap_active ap_identity ap_plan ap_token ap_mark ap_detail ap_action ap_row ap_plain ap_logout_x ap_model
         local ap_rows=()
         for ap_provider in claude codex; do
           if [ "$ap_provider" = claude ]; then _main_row "  ${C_B}Claude${C_X}"
           else _main_row ""; _main_row "  ${C_B}Codex${C_X}"; fi
+          ap_model=$(_loomo_model "$ap_provider"); [ -n "$ap_model" ] || ap_model="auto"
+          _main_row "    ${C_D}Model${C_X}  ${C_C}${C_B}[$ap_model]${C_X}  ${C_D}클릭해서 변경 · 모든 새 패널에 적용${C_X}" acctmodel "$ap_provider"
           if [ "$ap_provider" = claude ]; then ap_rows=(${CLAUDE_ACCT[@]+"${CLAUDE_ACCT[@]}"})
           else ap_rows=(${CODEX_ACCT[@]+"${CODEX_ACCT[@]}"}); fi
           for ap_row in ${ap_rows[@]+"${ap_rows[@]}"}; do
@@ -1837,6 +1851,7 @@ EOF
                               settingssync) _settings_sync ;;
                               settingsbypass) _settings_bypass_toggle ;;
                               settingstheme) _settings_theme_cycle ;;
+                              acctmodel) _settings_model_cycle "$xarg" ;;
                               authlogin) _settings_auth_login "$xarg" ;;
                               authlogout) _settings_auth_logout "$xarg" ;;
                               accountadd) _settings_account_add "$xarg" ;;

@@ -135,6 +135,7 @@ Run `loomo` to open the dashboard. Nearly everything can be managed here with th
 
 - Choose the Hub session that routes requests across projects.
 - Under **AI models**, each model lists its accounts by email. Click one to make every pane run as that account, add another with **[＋ Add account]**, or sign one out.
+- The **Model** toggle under each agent picks the model every pane launches with (`auto` leaves it to the CLI). Applies to newly opened and restarted panes.
 - View environment status and usage.
 - Refresh every project's collaboration convention with **[⟳ Sync now]** — no CLI needed.
 

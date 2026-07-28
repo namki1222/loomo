@@ -271,14 +271,19 @@ cmd_agent_entry() { # internal: agent session role dir
         dark)  cl_theme=(--settings '{"theme":"dark"}') ;;
         light) cl_theme=(--settings '{"theme":"light"}') ;;
       esac
-      exec claude $cl_opt ${cl_theme[@]+"${cl_theme[@]}"} --session-id "$id"
+      # Dashboard model setting (Settings → AI models); empty leaves the CLI default.
+      local -a cl_model=() _cm
+      _cm=$(_loomo_model claude); [ -n "$_cm" ] && cl_model=(--model "$_cm")
+      exec claude $cl_opt ${cl_theme[@]+"${cl_theme[@]}"} ${cl_model[@]+"${cl_model[@]}"} --session-id "$id"
       ;;
     codex)
       started=$(date +%s)
       _watch_codex_id "$session" "$role" "$dir" "$started" &
       local cx_opt="--sandbox danger-full-access"
       [ "${LOOMO_AUTO_MODE:-1}" = 0 ] || cx_opt="$cx_opt --ask-for-approval never"
-      exec codex $cx_opt
+      local -a cx_model=() _xm
+      _xm=$(_loomo_model codex); [ -n "$_xm" ] && cx_model=(--model "$_xm")
+      exec codex $cx_opt ${cx_model[@]+"${cx_model[@]}"}
       ;;
     *) echo "loomo: unknown agent: $ag" >&2; return 2 ;;
   esac

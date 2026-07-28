@@ -111,10 +111,14 @@ agent_launch() { # agent resume_id session role dir → 패널에서 실행할 �
     dark)  cl_theme=" --settings '{\"theme\":\"dark\"}'" ;;
     light) cl_theme=" --settings '{\"theme\":\"light\"}'" ;;
   esac
+  # Dashboard model setting (Settings → AI models); empty leaves the CLI default.
+  local cl_model="" cx_model="" _m
+  _m=$(_loomo_model claude); [ -n "$_m" ] && cl_model=" --model $_m"
+  _m=$(_loomo_model codex);  [ -n "$_m" ] && cx_model=" --model $_m"
   if [ -n "$rid" ]; then
     case "$ag" in
-      codex) printf 'exec %scodex %s resume %s' "$account_prefix" "$cx_opt" "$rid" ;;   # codex: 서브커맨드
-      *)     printf 'exec %sclaude %s%s --resume %s' "$account_prefix" "$cl_opt" "$cl_theme" "$rid" ;; # claude: 플래그
+      codex) printf 'exec %scodex %s%s resume %s' "$account_prefix" "$cx_opt" "$cx_model" "$rid" ;;   # codex: 서브커맨드
+      *)     printf 'exec %sclaude %s%s%s --resume %s' "$account_prefix" "$cl_opt" "$cl_theme" "$cl_model" "$rid" ;; # claude: 플래그
     esac
   else
     # A fresh CLI chooses a conversation ID only after launch. Route it through

@@ -135,6 +135,7 @@ loomo               # Homebrew → tmux → Claude Code → Codex 확인/설치 
 
 - 전체 요청을 라우팅할 Hub session을 지정한다.
 - **AI models** 아래에 모델별 계정이 이메일로 나열된다. 계정을 클릭하면 모든 패널이 그 계정으로 실행되고, **[＋ Add account]** 로 계정을 추가하거나 로그아웃할 수 있다.
+- 각 에이전트의 **Model** 토글로 패널이 사용할 모델을 정한다(`auto`는 CLI 기본값). 새로 열거나 재시작하는 패널부터 적용된다.
 - 환경 상태와 사용량을 확인한다.
 - **[⟳ Sync now]** 로 모든 프로젝트의 협업 규약(CLAUDE.md/AGENTS.md)을 최신 템플릿으로 갱신한다.
 

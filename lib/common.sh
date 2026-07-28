@@ -58,6 +58,20 @@ _loomo_theme() {
   [ -f "$CONFIG_DIR/theme" ] && read -r t < "$CONFIG_DIR/theme" 2>/dev/null
   case "$t" in dark|light) printf '%s' "$t" ;; *) printf 'auto' ;; esac
 }
+# Model every pane of an agent should launch with; empty = let the CLI decide.
+# Env (LOOMO_CLAUDE_MODEL / LOOMO_CODEX_MODEL) wins over the dashboard setting.
+_loomo_model() { # $1=claude|codex
+  local m=""
+  case "${1:-}" in
+    claude) m="${LOOMO_CLAUDE_MODEL:-}" ;;
+    codex)  m="${LOOMO_CODEX_MODEL:-}" ;;
+    *) return ;;
+  esac
+  [ -n "$m" ] || { [ -f "$CONFIG_DIR/model-$1" ] && read -r m < "$CONFIG_DIR/model-$1" 2>/dev/null; }
+  # Only a bare model name/alias — it is interpolated into launch commands.
+  case "$m" in auto|"") return ;; *[!A-Za-z0-9._-]*) return ;; esac
+  printf '%s' "$m"
+}
 # OSC 10/11 that forces a window's fg/bg for the chosen theme; empty for auto.
 _theme_osc() {
   case "$(_loomo_theme)" in
