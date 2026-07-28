@@ -312,6 +312,7 @@ _dashboard() {
   local SETTINGS_PAGE=main SETTINGS_MSG="" SKILL_DELETE="" ACCT_SWITCH="" CLAUDE_AUTH=unknown CODEX_AUTH=unknown
   local CLAUDE_ACCT=() CODEX_ACCT=()   # cached account rows for the Settings render (id\tlabel\tactive\tident\tplan\thasToken)
   local RECENT_MODEL=""                # concrete model the newest claude conversation ran on
+  local CLAUDE_LIVE_IDENT="" CODEX_IDENT="" ACCT_SEEN_AT=-99   # cached identities + last account re-read
   local DETAIL_SESSION="" DETAIL_ADD=0 DETAIL_EDIT=0 DETAIL_DELETE=0 DETAIL_PRESET="" DETAIL_MSG="" EDIT_SESSION="" EDIT_ROLE=""
   local HOVER_AREA="" HOVER_INDEX=-1 HOVER_GROUP="" LAST_CLICK_SESSION="" LAST_CLICK_TIME=0
   local ADOPT_FILTER=claude ADOPT_LOADED=0 ADOPT_MSG="" ADOPT_SELECTED=""
@@ -729,6 +730,7 @@ EOF
     CLAUDE_AUTH=unavailable; CODEX_AUTH=unavailable
     command -v claude >/dev/null 2>&1 && { if claude auth status >/dev/null 2>&1; then CLAUDE_AUTH=connected; else CLAUDE_AUTH=signed-out; fi; }
     command -v codex >/dev/null 2>&1 && { if codex login status >/dev/null 2>&1; then CODEX_AUTH=connected; else CODEX_AUTH=signed-out; fi; }
+    CLAUDE_LIVE_IDENT=""; CODEX_IDENT=""   # explicit refresh re-resolves the live logins too
     _settings_accounts_refresh
   }
   _split6() { # split tab-separated fields keeping empty ones (bash read collapses IFS whitespace)
@@ -741,20 +743,30 @@ EOF
     local ln id label active root ident plan
     CLAUDE_ACCT=(); CODEX_ACCT=()
     RECENT_MODEL=$(_loomo_recent_model)
+    ACCT_SEEN_AT=$SECONDS
+    # The live CLI identity costs a `claude auth status` round-trip, so resolve it
+    # once and reuse it — accounts are re-read often to catch logins done elsewhere.
+    if [ -z "$CLAUDE_LIVE_IDENT" ] && command -v claude >/dev/null 2>&1; then
+      CLAUDE_LIVE_IDENT=$(_account_identity claude default '')
+    fi
     # Claude rows come from the long-lived token store; 'default' shows the live CLI login.
     while IFS= read -r ln; do
       [ -n "$ln" ] || continue
       _split6 "$ln"
-      if [ "$F6" != 1 ] && [ "$F1" = default ] && command -v claude >/dev/null 2>&1; then
-        IFS=$'\t' read -r ident plan <<< "$(_account_identity claude default '')"
+      if [ "$F6" != 1 ] && [ "$F1" = default ] && [ -n "$CLAUDE_LIVE_IDENT" ]; then
+        IFS=$'\t' read -r ident plan <<< "$CLAUDE_LIVE_IDENT"
         [ -n "$ident" ] && ln="$F1"$'\t'"$F2"$'\t'"$F3"$'\t'"$ident"$'\t'"$plan"$'\t'2   # 2 = live login, no stored token
       fi
       CLAUDE_ACCT+=("$ln")
     done < <(_account_mutate tok-rows claude 2>/dev/null)
     while IFS=$'\t' read -r id label active root; do
       [ -n "$id" ] || continue
-      if command -v codex >/dev/null 2>&1 && _account_connected codex "$id" "$root"; then
+      if [ -n "$CODEX_IDENT" ] && [ "$id" = default ]; then
+        IFS=$'\t' read -r ident plan <<< "$CODEX_IDENT"
+        CODEX_ACCT+=("$id"$'\t'"$label"$'\t'"$active"$'\t'"${ident:-$label}"$'\t'"$plan"$'\t'1)
+      elif command -v codex >/dev/null 2>&1 && _account_connected codex "$id" "$root"; then
         IFS=$'\t' read -r ident plan <<< "$(_account_identity codex "$id" "$root")"
+        [ "$id" = default ] && CODEX_IDENT="$ident"$'\t'"$plan"
         CODEX_ACCT+=("$id"$'\t'"$label"$'\t'"$active"$'\t'"${ident:-$label}"$'\t'"$plan"$'\t'1)
       else
         CODEX_ACCT+=("$id"$'\t'"$label"$'\t'"$active"$'\t'"$label"$'\t'""$'\t'0)
@@ -854,20 +866,29 @@ EOF
     ACCT_SWITCH=""
     if [ "$provider" = claude ]; then
       if [ "$id" = default ]; then
+        # 'default' is the CLI's own login, not a stored one — sign it out for real.
         nohup claude auth logout </dev/null >"$CONFIG_DIR/claude-auth.log" 2>&1 &
-        CLAUDE_AUTH=signed-out
-        SETTINGS_MSG="Claude CLI 로그아웃 시작 · 저장된 토큰 계정은 그대로예요"
-      elif _account_mutate tok-forget claude "$id" >/dev/null 2>&1; then
-        SETTINGS_MSG="Claude 계정 연결 해제 · 저장된 토큰을 지웠어요"
+        CLAUDE_AUTH=signed-out; CLAUDE_LIVE_IDENT=""
+        SETTINGS_MSG="Claude CLI 로그아웃 · 저장된 다른 계정은 그대로예요"
+      elif _account_mutate remove claude "$id" >/dev/null 2>&1; then
+        # Drop the token and the profile itself: a profile with no login has no use.
+        SETTINGS_MSG="Claude 계정 로그아웃 · 목록에서 제거했어요"
       else
-        SETTINGS_MSG="계정 연결 해제에 실패했어요"
+        SETTINGS_MSG="계정 로그아웃에 실패했어요"
       fi
     else
       resolved=$(_account_resolve codex "$id" 2>/dev/null) || { SETTINGS_MSG="계정 프로필을 찾지 못했어요"; return 1; }
       IFS=$'\t' read -r id root <<< "$resolved"
-      if [ "$id" = default ]; then nohup codex logout </dev/null >"$CONFIG_DIR/codex-auth.log" 2>&1 &
-      else nohup env CODEX_HOME="$root" codex logout </dev/null >"$CONFIG_DIR/codex-${id}-auth.log" 2>&1 & fi
-      SETTINGS_MSG="Codex 로그아웃 시작 · 끝나면 [Refresh status]"
+      if [ "$id" = default ]; then
+        nohup codex logout </dev/null >"$CONFIG_DIR/codex-auth.log" 2>&1 &
+        CODEX_AUTH=signed-out; CODEX_IDENT=""
+        SETTINGS_MSG="Codex CLI 로그아웃 · 저장된 다른 계정은 그대로예요"
+      else
+        # Sign the isolated profile out, then drop it from the list.
+        nohup env CODEX_HOME="$root" codex logout </dev/null >"$CONFIG_DIR/codex-${id}-auth.log" 2>&1 &
+        _account_mutate remove codex "$id" >/dev/null 2>&1
+        SETTINGS_MSG="Codex 계정 로그아웃 · 목록에서 제거했어요"
+      fi
     fi
     _settings_accounts_refresh
     mtop=0
@@ -1281,6 +1302,10 @@ EOF
         _main_row "  ${C_B}AI models${C_X}  ${C_D}[Refresh status]${C_X}" authrefresh
         _main_row "  ${C_D}새 패널과 재시작 세션은 선택된 계정으로 열립니다${C_X}"
         _main_row ""
+        # Logins finish in a separate terminal, so re-read the (file-backed) account
+        # rows every few seconds — otherwise a new account sits invisible until
+        # someone presses [Refresh status]. Live identities stay cached.
+        [ $(( SECONDS - ACCT_SEEN_AT )) -ge 3 ] && _settings_accounts_refresh
         local ap_provider ap_id ap_label ap_active ap_identity ap_plan ap_token ap_mark ap_detail ap_action ap_row ap_plain ap_logout_x ap_model ap_model_note
         local ap_rows=()
         for ap_provider in claude codex; do
