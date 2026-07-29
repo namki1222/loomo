@@ -1029,7 +1029,12 @@ EOF
   }
   _hubc_attach_pane() { # pull the hub's real pane in beside the dashboard
     local pane origin
-    [ "$HUBC_JOINED" = 1 ] && return 0
+    if [ "$HUBC_JOINED" = 1 ]; then
+      # Claude may have exited under us; notice it instead of holding a corpse.
+      [ "$(tmux display-message -p -t "$HUBC_PANE" '#{pane_dead}' 2>/dev/null)" = 0 ] && return 0
+      _hubc_detach_pane
+      return 1
+    fi
     [ -n "${LOOMO_DASH_PANE:-}" ] || return 1        # only possible when we are a pane
     pane=$(_hubc_pane) || return 1
     origin=$(tmux display-message -p -t "$pane" '#{session_name}:#{window_index}' 2>/dev/null)
@@ -1042,8 +1047,9 @@ EOF
     else
       HUBC_KEEP=""
     fi
-    # The dashboard keeps a strip for its tabs; Claude gets the rest of the window.
-    if tmux join-pane -v -l "$(( ROWS - 4 ))" -s "$pane" -t "$TMUX_PANE" 2>/dev/null; then
+    # Two rows are enough for the tab strip (see the compact branch in _draw);
+    # the divider takes one more, so Claude gets everything below that.
+    if tmux join-pane -v -l "$(( ROWS - 3 ))" -s "$pane" -t "$TMUX_PANE" 2>/dev/null; then
       HUBC_JOINED=1; HUBC_ORIGIN="$origin"; HUBC_PANE="$pane"
       tmux select-pane -t "$pane" 2>/dev/null      # type into Claude right away
       return 0
@@ -1054,9 +1060,17 @@ EOF
   }
   _hubc_detach_pane() { # send the hub's pane home again
     [ "$HUBC_JOINED" = 1 ] || return 0
-    [ -n "$HUBC_PANE" ] && [ -n "$HUBC_ORIGIN" ] &&
+    local alive=""
+    [ -n "$HUBC_PANE" ] && alive=$(tmux display-message -p -t "$HUBC_PANE" '#{pane_dead}' 2>/dev/null)
+    if [ "$alive" = 0 ] && [ -n "$HUBC_ORIGIN" ]; then
       tmux join-pane -s "$HUBC_PANE" -t "$HUBC_ORIGIN" 2>/dev/null
-    [ -n "$HUBC_KEEP" ] && tmux kill-pane -t "$HUBC_KEEP" 2>/dev/null
+      [ -n "$HUBC_KEEP" ] && tmux kill-pane -t "$HUBC_KEEP" 2>/dev/null
+    else
+      # Claude exited while we had its pane. Drop the corpse and leave the
+      # placeholder holding the hub's window, so the session survives for a restart.
+      [ -n "$HUBC_PANE" ] && tmux kill-pane -t "$HUBC_PANE" 2>/dev/null
+      HUBC_MSG="비서 세션이 종료됐어요 · Sessions 탭에서 다시 시작하세요"
+    fi
     HUBC_JOINED=0; HUBC_PANE=""; HUBC_ORIGIN=""; HUBC_KEEP=""
     tmux select-pane -t "$TMUX_PANE" 2>/dev/null
     printf '\033[2J'
@@ -1829,6 +1843,15 @@ EOF
 
   _draw() {
     local rw=26 session_wrap_w=32
+    # Compact strip: while the Hub tab lends most of the window to Claude's pane
+    # there is only room for the tabs. Everything else is drawn by absolute row
+    # and would land on top of them. Tabs stay on row 2 so click targets hold.
+    if [ "$ROWS" -le 6 ]; then
+      printf '\033[1;1H %s비서 패널에서 바로 입력하세요 · Esc 중단 · 다른 탭을 누르면 패널을 돌려줍니다%s\033[K' "${C_D}" "${C_X}"
+      _draw_tabs
+      local _r; for ((_r=3;_r<=ROWS;_r++)); do printf '\033[%d;1H\033[K' "$_r"; done
+      return
+    fi
     _ensure_hub_active || true
     _dash_team
     _dash_tasks
