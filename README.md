@@ -125,6 +125,12 @@ Run `loomo` to open the dashboard. Nearly everything can be managed here with th
 - Double-click a project to open all its panes in a dedicated terminal.
 - Use `Edit arrangement` to assign unassigned panes or move existing panes between projects.
 
+### Hub
+
+- Chat with your Hub session without leaving the dashboard — type in the input line and the hub answers there.
+- It is the hub itself, not a separate assistant: same conversation, and it still delegates work to your project panes.
+- The hub session starts automatically if it isn't running.
+
 ### Adopt
 
 - Preview conversations previously used in Claude or Codex.

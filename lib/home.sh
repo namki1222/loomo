@@ -298,7 +298,7 @@ PY
 }
 
 _dashboard() {
-  local TABS=(Sessions Adopt Settings) tab=0 mtop=0 INPUT="" key rest mc mseq csi legacy_mouse
+  local TABS=(Sessions Hub Adopt Settings) tab=0 mtop=0 INPUT="" key rest mc mseq csi legacy_mouse
   local LAST_MOUSE_DOWN="" MOUSE_FINAL=""
   local FLOW="" FSTEP=0 FNAME="" FROLE="" FAGENT=""; local -a LOG=() MLC=() ULC=() LSEL=()
   local -a SACT=() SARG=() SGROUP=() UACT=() UARG=() UGROUP=() UP_ID=() UP_AG=() UP_DIR=() UP_NAME=()
@@ -313,6 +313,9 @@ _dashboard() {
   local CLAUDE_ACCT=() CODEX_ACCT=()   # cached account rows for the Settings render (id\tlabel\tactive\tident\tplan\thasToken)
   local RECENT_MODEL=""                # concrete model the newest claude conversation ran on
   local CLAUDE_LIVE_IDENT="" CODEX_IDENT="" ACCT_SEEN_AT=-99   # cached identities + last account re-read
+  # Hub chat: the dashboard is the chat window; the hub's own pane is the engine.
+  local -a HUBC_ROLE=() HUBC_TEXT=()   # rendered turns (role + body, newlines as \x01)
+  local HUBC_FILE="" HUBC_STAMP="" HUBC_SEEN_AT=-99 HUBC_MSG="" HUBC_WAITING=0
   local DETAIL_SESSION="" DETAIL_ADD=0 DETAIL_EDIT=0 DETAIL_DELETE=0 DETAIL_PRESET="" DETAIL_MSG="" EDIT_SESSION="" EDIT_ROLE=""
   local HOVER_AREA="" HOVER_INDEX=-1 HOVER_GROUP="" LAST_CLICK_SESSION="" LAST_CLICK_TIME=0
   local ADOPT_FILTER=claude ADOPT_LOADED=0 ADOPT_MSG="" ADOPT_SELECTED=""
@@ -915,6 +918,93 @@ EOF
     _settings_accounts_refresh
     mtop=0
   }
+  # ── Hub chat ────────────────────────────────────────────────────────────────
+  # The hub keeps running in its own pane; the dashboard just shows that pane's
+  # conversation and types into it, so this chat IS the hub (same history, same
+  # ability to delegate with tell) instead of a second, disconnected agent.
+  _hubc_file() { # resolve the hub pane's transcript, '' when it has none yet
+    local rid=""
+    get_hub 2>/dev/null || return 1
+    [ -n "${HUB:-}" ] && [ -n "${HUBR:-}" ] || return 1
+    rid=$(grep -vE '^[[:space:]]*(#|$)' "$WS_CONF" 2>/dev/null \
+      | LC_ALL=C awk -F'|' -v s="$HUB" -v r="$HUBR" '$1==s && $2==r {print $4; exit}')
+    [ -n "$rid" ] || return 1
+    node -e '
+      const fs=require("fs"), os=require("os"), path=require("path");
+      const root=path.join(os.homedir(),".claude","projects");
+      let dirs=[]; try { dirs=fs.readdirSync(root); } catch { process.exit(0); }
+      for (const d of dirs) {
+        const p=path.join(root,d,process.argv[1]+".jsonl");
+        if (fs.existsSync(p)) { process.stdout.write(p); break; }
+      }
+    ' "$rid" 2>/dev/null
+  }
+  _hubc_load() { # re-read the transcript into HUBC_ROLE/HUBC_TEXT (cheap: tail only)
+    local out line role text
+    HUBC_SEEN_AT=$SECONDS
+    [ -n "$HUBC_FILE" ] || HUBC_FILE=$(_hubc_file)
+    [ -n "$HUBC_FILE" ] && [ -f "$HUBC_FILE" ] || return 1
+    HUBC_ROLE=(); HUBC_TEXT=()
+    while IFS=$'\t' read -r role text; do
+      [ -n "$role" ] || continue
+      HUBC_ROLE+=("$role"); HUBC_TEXT+=("$text")
+    done < <(node -e '
+      const fs=require("fs");
+      const file=process.argv[1];
+      let buf="";
+      try {
+        const size=fs.statSync(file).size, len=Math.min(size, 512*1024);
+        const fd=fs.openSync(file,"r"), b=Buffer.alloc(len);
+        fs.readSync(fd,b,0,len,size-len); fs.closeSync(fd); buf=b.toString("utf8");
+      } catch { process.exit(0); }
+      const turns=[];
+      for (const line of buf.split("\n")) {
+        let o; try { o=JSON.parse(line); } catch { continue; }
+        if (o.type!=="user" && o.type!=="assistant") continue;
+        const c=o.message && o.message.content;
+        let t="";
+        if (typeof c==="string") t=c;
+        else if (Array.isArray(c)) t=c.filter(b=>b&&b.type==="text").map(b=>b.text).join("");
+        t=t.trim();
+        if (!t) continue;
+        if (o.type==="user" && /^<(command-name|local-command|system-reminder)/.test(t)) continue;
+        turns.push(o.type+"\t"+t.replace(/\t/g," ").replace(/\n/g,""));
+      }
+      process.stdout.write(turns.slice(-40).join("\n"));
+    ' "$HUBC_FILE" 2>/dev/null)
+    HUBC_STAMP=$(stat -f %m "$HUBC_FILE" 2>/dev/null || stat -c %Y "$HUBC_FILE" 2>/dev/null)
+    return 0
+  }
+  _hubc_poll() { # refresh when the transcript changed (the hub answers in its own pane)
+    local now
+    [ $(( SECONDS - HUBC_SEEN_AT )) -ge 2 ] || return
+    HUBC_SEEN_AT=$SECONDS
+    [ -n "$HUBC_FILE" ] || { _hubc_load; return; }
+    now=$(stat -f %m "$HUBC_FILE" 2>/dev/null || stat -c %Y "$HUBC_FILE" 2>/dev/null)
+    [ "$now" = "$HUBC_STAMP" ] && return
+    _hubc_load && HUBC_WAITING=0
+  }
+  _hubc_send() { # deliver one message to the hub pane, starting the hub if needed
+    local msg="$1" pane
+    [ -n "$msg" ] || return
+    if ! get_hub 2>/dev/null || [ -z "${HUB:-}" ]; then
+      HUBC_MSG="허브 세션이 지정되지 않았어요 · Settings → Hub session"; return 1
+    fi
+    if ! tmux has-session -t "=$HUB" 2>/dev/null; then
+      HUBC_MSG="허브 세션을 시작하는 중…"
+      ws_boot "$HUB" >/dev/null 2>&1 || { HUBC_MSG="허브 세션을 시작하지 못했어요"; return 1; }
+    fi
+    pane=$(tmux list-panes -t "=$HUB" -F "#{pane_id}	#{pane_title}" 2>/dev/null \
+      | LC_ALL=C awk -F'\t' -v r="$HUBR" '$2==r{print $1; exit}')
+    [ -n "$pane" ] || { HUBC_MSG="허브 패널을 찾지 못했어요: $HUB:$HUBR"; return 1; }
+    # Same delivery tell uses: type the text, submit, then confirm it left the box.
+    tmux send-keys -t "$pane" -l "$msg" 2>/dev/null
+    sleep 0.4
+    tmux send-keys -t "$pane" Enter 2>/dev/null
+    HUBC_ROLE+=("user"); HUBC_TEXT+=("${msg//$'\n'/$'\001'}")
+    HUBC_WAITING=1; HUBC_MSG=""
+    return 0
+  }
   _settings_skill_start() {
     FLOW=SkillAdd; FSTEP=1; INPUT=""; LOG=("${C_B}＋ Add Markdown skill${C_X}" "" "이 화면에 .md 파일을 드래그앤드롭하세요." "${C_D}직접 경로를 입력해도 됩니다.${C_X}")
   }
@@ -1269,6 +1359,37 @@ EOF
 $reg
 EOF
         [ -z "$reg" ] && { _main_row ""; _main_row "  아직 프로젝트가 없어요. Add 탭에서 먼저 만들어보세요."; }
+      fi
+    elif [ "$name" = "Hub" ]; then
+      _hubc_poll
+      local hb_i hb_w hb_seg hb_line hb_body rr
+      if ! get_hub 2>/dev/null || [ -z "${HUB:-}" ]; then
+        _main_row "  ${C_B}Hub chat${C_X}"
+        _main_row ""
+        _main_row "  ${C_D}허브 세션이 지정되지 않았어요.${C_X}"
+        _main_row "  ${C_C}${C_B}[Settings → Hub session]${C_X} 에서 먼저 지정하세요." settingshubjump
+      else
+        rr="${C_D}•${C_X}"; tmux has-session -t "=$HUB" 2>/dev/null && rr="${C_G}${C_B}•${C_X}"
+        _main_row "  ${C_B}Hub chat${C_X}  $rr ${C_D}$HUB:$HUBR${C_X}  ${C_D}아래 입력창에 쓰면 허브가 답합니다${C_X}"
+        _main_row ""
+        [ -n "$HUBC_FILE" ] || _hubc_load
+        hb_w=$(( LW - 8 )); [ "$hb_w" -lt 20 ] && hb_w=20
+        if [ "${#HUBC_ROLE[@]}" -eq 0 ]; then
+          _main_row "  ${C_D}아직 대화가 없어요. 허브에게 말을 걸어보세요.${C_X}"
+          _main_row "  ${C_D}예: \"하울팟 서버 상태 확인해줘\"${C_X}"
+        fi
+        for ((hb_i=0; hb_i<${#HUBC_ROLE[@]}; hb_i++)); do
+          if [ "${HUBC_ROLE[$hb_i]}" = user ]; then _main_row "  ${C_C}${C_B}› 나${C_X}"
+          else _main_row "  ${C_G}${C_B}● 비서${C_X}"; fi
+          hb_body="${HUBC_TEXT[$hb_i]}"
+          while IFS= read -r hb_seg; do
+            _wrap_cols "$hb_seg" "$hb_w" 60
+            for hb_line in ${WRAPPED[@]+"${WRAPPED[@]}"}; do _main_row "    $hb_line"; done
+          done < <(printf '%s\n' "${hb_body//$'\001'/$'\n'}")
+          _main_row ""
+        done
+        [ "$HUBC_WAITING" = 1 ] && _main_row "  ${C_Y}● 비서가 답하는 중…${C_X}"
+        [ -n "$HUBC_MSG" ] && _main_row "  ${C_Y}$HUBC_MSG${C_X}"
       fi
     elif [ "$name" = "Settings" ]; then
       _flow_ensure
@@ -1874,6 +1995,13 @@ EOF
                               panelview) _session_click "$arg" ;;
                               *) continue ;;
                             esac ;;
+                  Hub) local hi hact
+                       hi=$(( mtop + ${my:-0} - 4 )); hact="${SACT[$hi]:-none}"
+                       case "$hact" in
+                         settingshubjump) for ((i=0;i<${#TABS[@]};i++)); do [ "${TABS[$i]}" = Settings ] && tab=$i; done
+                                          SETTINGS_PAGE=hub; mtop=0 ;;
+                         *) continue ;;
+                       esac ;;
                   Settings) local xi xact xarg
                             xi=$(( mtop + ${my:-0} - 4 )); xact="${SACT[$xi]:-none}"; xarg="${SARG[$xi]:-}"
                             [ -n "$FLOW" ] && [ "$xact" != settingsskillback ] && continue
@@ -1934,6 +2062,7 @@ EOF
       "")  case "${TABS[$tab]}" in
              Sessions) [ -n "$FLOW" ] || continue; [ "$ADD_BROWSE" = 1 ] && [ -z "$INPUT" ] && continue
                        local a="$INPUT"; INPUT=""; _flow_answer "$a"; mtop=9999 ;;
+             Hub) [ -n "$INPUT" ] || continue; local hm="$INPUT"; INPUT=""; _hubc_send "$hm"; mtop=9999 ;;
              Adopt) [ -n "$FLOW" ] || continue; local a="$INPUT"; INPUT=""; _flow_answer "$a"; mtop=9999 ;;
              Settings) [ -n "$FLOW" ] || continue; local a="$INPUT"; INPUT=""; _flow_answer "$a"; mtop=9999 ;;
              *) continue ;;
