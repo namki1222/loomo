@@ -1036,6 +1036,31 @@ EOF
     HUBC_MSG=""; HUBC_SEEN_AT=-99
     return 0
   }
+  _hubc_key() { # forward one keypress to the hub pane; non-zero = not ours to send
+    local k="$1" pane byte
+    pane=$(_hubc_pane) || return 1
+    case "$k" in
+      UP)    tmux send-keys -t "$pane" Up 2>/dev/null; return 0 ;;
+      DOWN)  tmux send-keys -t "$pane" Down 2>/dev/null; return 0 ;;
+      LEFT)  tmux send-keys -t "$pane" Left 2>/dev/null; return 0 ;;
+      RIGHT) tmux send-keys -t "$pane" Right 2>/dev/null; return 0 ;;
+      BTAB)  tmux send-keys -t "$pane" BTab 2>/dev/null; return 0 ;;
+      "")    tmux send-keys -t "$pane" Enter 2>/dev/null; return 0 ;;
+      $'\x7f'|$'\b') tmux send-keys -t "$pane" BSpace 2>/dev/null; return 0 ;;
+      $'\t')  tmux send-keys -t "$pane" Tab 2>/dev/null; return 0 ;;
+      ESCAPE|$'\x1b') tmux send-keys -t "$pane" Escape 2>/dev/null; return 0 ;;
+    esac
+    # Control characters keep their meaning (C-c interrupts, C-u clears, …).
+    byte=$(LC_ALL=C printf '%d' "'$k" 2>/dev/null); [ "${byte:-0}" -lt 0 ] 2>/dev/null && byte=$((byte+256))
+    if [ "${byte:-0}" -ge 1 ] 2>/dev/null && [ "${byte:-0}" -le 26 ]; then
+      tmux send-keys -t "$pane" "C-$(printf "\\$(printf '%03o' $((byte+96)))")" 2>/dev/null
+      return 0
+    fi
+    # Anything printable (including multi-byte UTF-8) goes through literally.
+    [ -n "$k" ] || return 1
+    tmux send-keys -t "$pane" -l "$k" 2>/dev/null
+    return 0
+  }
   _hubc_send() { # deliver one message to the hub pane without leaving the dashboard
     local msg="$1" pane
     [ -n "$msg" ] || return
@@ -1833,12 +1858,19 @@ EOF
     if [ -n "$notice" ]; then
       _fit_cols "$notice" $((LW-8))
       printf '\033[%d;1H%s%s %s %s%s\033[K' "$(( ROWS - 2 ))" "${C_D}" "$(_hrn 2)" "$notice_tone" "$notice_icon $FITTED" "$C_X"
-    else
+    elif [ "${TABS[$tab]}" != Hub ]; then
       printf '\033[%d;1H%s%s 채팅%s\033[K' "$(( ROWS - 2 ))" "${C_D}" "$(_hrn 3)" "$(_hrn $(( LW - 8 )))"
     fi
-    printf '\033[%d;1H %s❯%s %s\033[K' "$(( ROWS - 1 ))" "${C_C}${C_B}" "${C_X}" "${INPUT:0:$(( LW - 4 ))}"
-    printf '\033[s%s▏%s' "${C_D}" "${C_X}"
-    printf '\033[%d;1H %s←→ 탭 · 채팅 입력 후 Enter · ↑↓ 스크롤 · Ctrl-C 종료%s\033[0m\033[K' "$ROWS" "${C_D}" "${C_X}"
+    if [ "${TABS[$tab]}" = Hub ]; then
+      # Keys go to the mirrored pane, so the dashboard's own input line would
+      # only be a second place to type into. Claude already has one.
+      printf '\033[%d;1H\033[K' "$(( ROWS - 1 ))"
+      printf '\033[%d;1H %s타이핑이 비서에게 바로 전달됩니다 · Esc 중단 · 탭 전환은 위 탭 클릭 · Ctrl-C 대시보드 종료%s\033[0m\033[K' "$ROWS" "${C_D}" "${C_X}"
+    else
+      printf '\033[%d;1H %s❯%s %s\033[K' "$(( ROWS - 1 ))" "${C_C}${C_B}" "${C_X}" "${INPUT:0:$(( LW - 4 ))}"
+      printf '\033[s%s▏%s' "${C_D}" "${C_X}"
+      printf '\033[%d;1H %s←→ 탭 · 채팅 입력 후 Enter · ↑↓ 스크롤 · Ctrl-C 종료%s\033[0m\033[K' "$ROWS" "${C_D}" "${C_X}"
+    fi
     STAR_X0=0; STAR_X1=0; STAR_Y=0; TASK_RESET_X0=0; TASK_RESET_X1=0; TASK_RESET_Y=0
     if [ "$rw" -gt 0 ]; then local r rc
       for ((r=4; r<=ROWS; r++)); do rc="${R[$((r-4))]:-}"
@@ -1930,13 +1962,21 @@ EOF
           M) IFS= read -rsn3 -t 1 legacy_mouse </dev/tty || true; key=IGNORE ;;
           *A) key=UP ;; *B) key=DOWN ;; *C) key=RIGHT ;; *D) key=LEFT ;;
           5~) key=UP ;; 6~) key=DOWN ;;
+          Z) key=BTAB ;;   # shift+tab — Claude cycles its modes with it
           *) key=IGNORE ;;
         esac
       elif [ "$rest" = 'O' ]; then
         IFS= read -rsn1 -t 1 mc </dev/tty || mc=""
         case "$mc" in A) key=UP ;; B) key=DOWN ;; C) key=RIGHT ;; D) key=LEFT ;; *) key=IGNORE ;; esac
+      elif [ -z "$rest" ]; then key=ESCAPE   # bare Esc — Claude interrupts on it
       else key=IGNORE
       fi
+    fi
+    # On the Hub tab the keyboard belongs to the mirrored Claude pane: forward
+    # each key straight through and repaint, so typing feels like being in it.
+    # The mouse stays with the dashboard, which is how you leave the tab.
+    if [ "${TABS[$tab]}" = Hub ] && [ "$key" != MOUSE ] && [ "$key" != IGNORE ]; then
+      if _hubc_key "$key"; then _draw; continue; fi
     fi
     case "$key" in
       RIGHT) tab=$(( (tab+1) % ${#TABS[@]} )); mtop=0; HOVER_AREA=""; HOVER_INDEX=-1; HOVER_GROUP="" ;;
