@@ -66,10 +66,14 @@ _dash_in_tmux() {
     tmux new-session -d -s "$DASH_SESSION" -x "$cols" -y "$rows" \
       "LOOMO_DASH_PANE=1 $(printf '%q' "$0")" 2>/dev/null || {
         warn "could not start the dashboard session"; return 1; }
-    tmux set-option -t "=$DASH_SESSION" status off 2>/dev/null
     # The dashboard owns this window; keep tmux from renaming or killing it early.
     tmux set-option -t "=$DASH_SESSION" destroy-unattached off 2>/dev/null
   fi
+  # The dashboard draws its own header and tabs, so tmux's status bar and pane
+  # titles are just chrome on top of it — and the title row costs Claude a line.
+  # Applied on every attach: an existing session may predate this.
+  tmux set-option -t "$DASH_SESSION" status off 2>/dev/null
+  tmux set-option -w -t "$DASH_SESSION" pane-border-status off 2>/dev/null
   tmux attach -t "=$DASH_SESSION"
 }
 
@@ -1047,9 +1051,11 @@ EOF
     else
       HUBC_KEEP=""
     fi
-    # Two rows are enough for the tab strip (see the compact branch in _draw);
-    # the divider takes one more, so Claude gets everything below that.
-    if tmux join-pane -v -l "$(( ROWS - 3 ))" -s "$pane" -t "$TMUX_PANE" 2>/dev/null; then
+    if tmux join-pane -v -s "$pane" -t "$TMUX_PANE" 2>/dev/null; then
+      # Size the strip directly instead of deriving it: borders and the status
+      # line also take rows, and guessing left the tabs with no row to sit on.
+      # The tab row is row 2 (clicks are matched against it), so 2 is the floor.
+      tmux resize-pane -t "$TMUX_PANE" -y 2 2>/dev/null
       HUBC_JOINED=1; HUBC_ORIGIN="$origin"; HUBC_PANE="$pane"
       tmux select-pane -t "$pane" 2>/dev/null      # type into Claude right away
       return 0
