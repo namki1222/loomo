@@ -231,6 +231,7 @@ done
 case "${1:-}" in
   __agent) shift; cmd_agent_entry "$@"; exit $? ;;
   __agent64) shift; cmd_agent_entry_encoded "$@"; exit $? ;;
+  __sidebar) cmd_sidebar; exit $? ;;   # internal: the dashboard's status column as its own pane
   add)    shift; cmd_add "$@";   exit $? ;;
   adopt)  shift; cmd_adopt "$@";  exit $? ;;
   hub)    shift; cmd_hub "$@";    exit $? ;;
