@@ -1858,7 +1858,9 @@ EOF
     if [ -n "$notice" ]; then
       _fit_cols "$notice" $((LW-8))
       printf '\033[%d;1H%s%s %s %s%s\033[K' "$(( ROWS - 2 ))" "${C_D}" "$(_hrn 2)" "$notice_tone" "$notice_icon $FITTED" "$C_X"
-    elif [ "${TABS[$tab]}" != Hub ]; then
+    elif [ "${TABS[$tab]}" = Hub ]; then
+      printf '\033[%d;1H\033[K' "$(( ROWS - 2 ))"   # no chat rule here — clear whatever the last tab left
+    else
       printf '\033[%d;1H%s%s 채팅%s\033[K' "$(( ROWS - 2 ))" "${C_D}" "$(_hrn 3)" "$(_hrn $(( LW - 8 )))"
     fi
     if [ "${TABS[$tab]}" = Hub ]; then
