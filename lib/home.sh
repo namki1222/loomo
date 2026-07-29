@@ -316,6 +316,7 @@ _dashboard() {
   # Hub chat: the dashboard is the chat window; the hub's own pane is the engine.
   local -a HUBC_ROLE=() HUBC_TEXT=()   # rendered turns (role + body, newlines as \x01)
   local HUBC_FILE="" HUBC_STAMP="" HUBC_SEEN_AT=-99 HUBC_MSG="" HUBC_WAITING=0
+  local -a HUBC_VIEW=(); local HUBC_SIZE=""   # live mirror of the hub pane + the size it is held at
   local DETAIL_SESSION="" DETAIL_ADD=0 DETAIL_EDIT=0 DETAIL_DELETE=0 DETAIL_PRESET="" DETAIL_MSG="" EDIT_SESSION="" EDIT_ROLE=""
   local HOVER_AREA="" HOVER_INDEX=-1 HOVER_GROUP="" LAST_CLICK_SESSION="" LAST_CLICK_TIME=0
   local ADOPT_FILTER=claude ADOPT_LOADED=0 ADOPT_MSG="" ADOPT_SELECTED=""
@@ -997,6 +998,23 @@ EOF
     [ -n "$pane" ] || { HUBC_MSG="허브 패널을 찾지 못했어요: $HUB:$HUBR"; return 1; }
     printf '%s' "$pane"
   }
+  _hubc_mirror() { # mirror the hub pane's live screen into the content area
+    local pane w h
+    pane=$(_hubc_pane) || return 1
+    w=$LW; h=$LISTBODY
+    [ "$w" -gt 20 ] && [ "$h" -gt 3 ] || return 1
+    # Match the pane to the area we paint into so nothing wraps or gets clipped.
+    # Only safe while nobody is attached — a client would fight us for the size.
+    if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
+      if [ "$HUBC_SIZE" != "${w}x${h}" ]; then
+        tmux set-option -w -t "$pane" window-size manual 2>/dev/null
+        tmux resize-window -t "$pane" -x "$w" -y "$h" 2>/dev/null && HUBC_SIZE="${w}x${h}"
+      fi
+    fi
+    HUBC_VIEW=()
+    while IFS= read -r line; do HUBC_VIEW+=("$line"); done < <(tmux capture-pane -e -p -t "$pane" 2>/dev/null)
+    [ "${#HUBC_VIEW[@]}" -gt 0 ]
+  }
   _hubc_open() { # hand the terminal to the hub's own Claude UI, then come back
     local pane
     pane=$(_hubc_pane) || return 1
@@ -1394,34 +1412,16 @@ EOF
         _main_row "  ${C_D}허브 세션이 지정되지 않았어요.${C_X}"
         _main_row "  ${C_C}${C_B}[Settings → Hub session]${C_X} 에서 먼저 지정하세요." settingshubjump
       else
-        rr="${C_D}•${C_X}"; tmux has-session -t "=$HUB" 2>/dev/null && rr="${C_G}${C_B}•${C_X}"
-        _main_row "  ${C_B}Hub chat${C_X}  $rr ${C_D}$HUB:$HUBR${C_X}"
-        _main_row "  ${C_C}${C_B}[대화 열기]${C_X}  ${C_D}비서의 Claude 화면을 그대로 엽니다 · 나올 때 Ctrl-b d${C_X}" hubopen
-        _main_row "  ${C_D}빠르게 한 마디만 시킬 거면 아래 입력창에 바로 써도 됩니다${C_X}"
-        _main_row ""
-        [ -n "$HUBC_FILE" ] || _hubc_load
-        hb_w=$(( LW - 8 )); [ "$hb_w" -lt 20 ] && hb_w=20
-        if [ "${#HUBC_ROLE[@]}" -eq 0 ]; then
-          _main_row "  ${C_D}아직 대화가 없어요. 허브에게 말을 걸어보세요.${C_X}"
-          _main_row "  ${C_D}예: \"하울팟 서버 상태 확인해줘\"${C_X}"
+        # The hub's own Claude screen, mirrored live into this area — its real
+        # output and formatting, while the dashboard keeps its tabs and input line.
+        if _hubc_mirror; then
+          for hb_line in ${HUBC_VIEW[@]+"${HUBC_VIEW[@]}"}; do _main_row "$hb_line"; done
         else
-          _main_row "  ${C_D}최근 대화${C_X}"
+          _main_row "  ${C_B}Hub${C_X}  ${C_D}$HUB:$HUBR${C_X}"
           _main_row ""
+          _main_row "  ${C_D}${HUBC_MSG:-허브 화면을 불러오지 못했어요}${C_X}"
+          _main_row "  ${C_C}${C_B}[대화 열기]${C_X}  ${C_D}전체 화면으로 열기 · 나올 때 Ctrl-b d${C_X}" hubopen
         fi
-        # Only a short tail here — the full, live view is the pane itself.
-        hb_i=$(( ${#HUBC_ROLE[@]} - 8 )); [ "$hb_i" -lt 0 ] && hb_i=0
-        for ((; hb_i<${#HUBC_ROLE[@]}; hb_i++)); do
-          if [ "${HUBC_ROLE[$hb_i]}" = user ]; then _main_row "  ${C_C}${C_B}› 나${C_X}"
-          else _main_row "  ${C_G}${C_B}● 비서${C_X}"; fi
-          hb_body="${HUBC_TEXT[$hb_i]}"
-          while IFS= read -r hb_seg; do
-            _wrap_cols "$hb_seg" "$hb_w" 60
-            for hb_line in ${WRAPPED[@]+"${WRAPPED[@]}"}; do _main_row "    $hb_line"; done
-          done < <(printf '%s\n' "${hb_body//$'\001'/$'\n'}")
-          _main_row ""
-        done
-        [ "$HUBC_WAITING" = 1 ] && _main_row "  ${C_Y}● 비서가 답하는 중…${C_X}"
-        [ -n "$HUBC_MSG" ] && _main_row "  ${C_Y}$HUBC_MSG${C_X}"
       fi
     elif [ "$name" = "Settings" ]; then
       _flow_ensure
@@ -1660,6 +1660,12 @@ EOF
         else
           printf '\033[%d;%dH%s│%s %s' "$((r+4))" "$((SESSION_LEFT_W+1))" "${C_D}" "${C_X}" "$shown"
         fi
+      elif [ "${TABS[$tab]}" = Hub ]; then
+        # Mirrored pane rows carry their own colors: slice by columns, not bytes,
+        # or an escape sequence gets cut in half and the styling bleeds.
+        _slice_ansi_cols "$s" "$LW"
+        printf '\033[%d;1H%*s' "$((r+4))" "$LW" ""
+        printf '\033[%d;1H%s\033[0m' "$((r+4))" "$SLICED"
       else
         printf '\033[%d;1H%*s' "$((r+4))" "$LW" ""
         printf '\033[%d;1H%s' "$((r+4))" "${s:0:$LW}"
@@ -1901,8 +1907,13 @@ EOF
   while :; do
     if ! _read_tui_char key 1; then
       key=IGNORE
-      local new_task_stamp; new_task_stamp=$(_task_file_stamp)
-      if [ "$new_task_stamp" != "$TASK_STAMP" ]; then TASK_STAMP="$new_task_stamp"; _draw; fi
+      # The Hub tab mirrors a live pane, so it repaints on every idle tick
+      # instead of only when something the dashboard owns changed.
+      # (Bash 3.2's `read -t` takes whole seconds, so one second is the floor.)
+      if [ "${TABS[$tab]}" = Hub ]; then _draw; else
+        local new_task_stamp; new_task_stamp=$(_task_file_stamp)
+        if [ "$new_task_stamp" != "$TASK_STAMP" ]; then TASK_STAMP="$new_task_stamp"; _draw; fi
+      fi
     fi
     if [ "$key" = $'\x1b' ]; then
       # CSI는 길이가 고정되어 있지 않다. 종결 문자까지 전부 소비해야
