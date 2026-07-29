@@ -41,8 +41,36 @@ cmd_home() {
     note "fix the issue above, then run loomo again"
     return 1
   fi
-  if [ -t 0 ] && [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then _dash_autosync; _dashboard; return $?; fi
+  if [ -t 0 ] && [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then
+    _dash_autosync
+    # Run the dashboard as a pane of loomo's own tmux server. That is what lets
+    # the Hub tab pull the hub's pane in beside it as a real pane instead of a
+    # redrawn copy — a pane can only live inside a tmux window.
+    if [ "${LOOMO_DASH_PANE:-0}" != 1 ] && ! inside_loomo_tmux; then
+      _dash_in_tmux; return $?
+    fi
+    _dashboard; return $?
+  fi
   cmd_help
+}
+
+DASH_SESSION="${LOOMO_DASH_SESSION:-__loomo_dash}"
+
+# Host the dashboard in its own tmux session, then attach to it. Re-running loomo
+# reattaches instead of stacking a second dashboard.
+_dash_in_tmux() {
+  local sz rows cols
+  sz=$(stty size </dev/tty 2>/dev/null); rows=${sz%% *}; cols=${sz##* }
+  [ -n "$rows" ] || rows=40; [ -n "$cols" ] || cols=120
+  if ! tmux has-session -t "=$DASH_SESSION" 2>/dev/null; then
+    tmux new-session -d -s "$DASH_SESSION" -x "$cols" -y "$rows" \
+      "LOOMO_DASH_PANE=1 $(printf '%q' "$0")" 2>/dev/null || {
+        warn "could not start the dashboard session"; return 1; }
+    tmux set-option -t "=$DASH_SESSION" status off 2>/dev/null
+    # The dashboard owns this window; keep tmux from renaming or killing it early.
+    tmux set-option -t "=$DASH_SESSION" destroy-unattached off 2>/dev/null
+  fi
+  tmux attach -t "=$DASH_SESSION"
 }
 
 # Refresh every project's convention once when the templates or hub changed since
@@ -317,6 +345,7 @@ _dashboard() {
   local -a HUBC_ROLE=() HUBC_TEXT=()   # rendered turns (role + body, newlines as \x01)
   local HUBC_FILE="" HUBC_STAMP="" HUBC_SEEN_AT=-99 HUBC_MSG="" HUBC_WAITING=0
   local -a HUBC_VIEW=(); local HUBC_SIZE=""   # live mirror of the hub pane + the size it is held at
+  local HUBC_JOINED=0 HUBC_PANE="" HUBC_ORIGIN="" HUBC_KEEP=""   # the hub's real pane, borrowed into this window
   local DETAIL_SESSION="" DETAIL_ADD=0 DETAIL_EDIT=0 DETAIL_DELETE=0 DETAIL_PRESET="" DETAIL_MSG="" EDIT_SESSION="" EDIT_ROLE=""
   local HOVER_AREA="" HOVER_INDEX=-1 HOVER_GROUP="" LAST_CLICK_SESSION="" LAST_CLICK_TIME=0
   local ADOPT_FILTER=claude ADOPT_LOADED=0 ADOPT_MSG="" ADOPT_SELECTED=""
@@ -998,6 +1027,40 @@ EOF
     [ -n "$pane" ] || { HUBC_MSG="허브 패널을 찾지 못했어요: $HUB:$HUBR"; return 1; }
     printf '%s' "$pane"
   }
+  _hubc_attach_pane() { # pull the hub's real pane in beside the dashboard
+    local pane origin
+    [ "$HUBC_JOINED" = 1 ] && return 0
+    [ -n "${LOOMO_DASH_PANE:-}" ] || return 1        # only possible when we are a pane
+    pane=$(_hubc_pane) || return 1
+    origin=$(tmux display-message -p -t "$pane" '#{session_name}:#{window_index}' 2>/dev/null)
+    [ -n "$origin" ] || return 1
+    # Moving a window's last pane destroys its session, so leave a placeholder
+    # behind — otherwise borrowing the hub's pane would kill the hub itself.
+    if [ "$(tmux list-panes -t "$origin" 2>/dev/null | grep -c .)" -le 1 ]; then
+      tmux split-window -d -t "$pane" 'sleep 2147483647' 2>/dev/null
+      HUBC_KEEP=$(tmux list-panes -t "$origin" -F '#{pane_id}' 2>/dev/null | grep -v "^${pane}$" | head -1)
+    else
+      HUBC_KEEP=""
+    fi
+    # The dashboard keeps a strip for its tabs; Claude gets the rest of the window.
+    if tmux join-pane -v -l "$(( ROWS - 4 ))" -s "$pane" -t "$TMUX_PANE" 2>/dev/null; then
+      HUBC_JOINED=1; HUBC_ORIGIN="$origin"; HUBC_PANE="$pane"
+      tmux select-pane -t "$pane" 2>/dev/null      # type into Claude right away
+      return 0
+    fi
+    [ -n "$HUBC_KEEP" ] && tmux kill-pane -t "$HUBC_KEEP" 2>/dev/null
+    HUBC_KEEP=""
+    return 1
+  }
+  _hubc_detach_pane() { # send the hub's pane home again
+    [ "$HUBC_JOINED" = 1 ] || return 0
+    [ -n "$HUBC_PANE" ] && [ -n "$HUBC_ORIGIN" ] &&
+      tmux join-pane -s "$HUBC_PANE" -t "$HUBC_ORIGIN" 2>/dev/null
+    [ -n "$HUBC_KEEP" ] && tmux kill-pane -t "$HUBC_KEEP" 2>/dev/null
+    HUBC_JOINED=0; HUBC_PANE=""; HUBC_ORIGIN=""; HUBC_KEEP=""
+    tmux select-pane -t "$TMUX_PANE" 2>/dev/null
+    printf '\033[2J'
+  }
   _hubc_mirror() { # mirror the hub pane's live screen into the content area
     local pane w h
     pane=$(_hubc_pane) || return 1
@@ -1437,9 +1500,12 @@ EOF
         _main_row "  ${C_D}허브 세션이 지정되지 않았어요.${C_X}"
         _main_row "  ${C_C}${C_B}[Settings → Hub session]${C_X} 에서 먼저 지정하세요." settingshubjump
       else
-        # The hub's own Claude screen, mirrored live into this area — its real
-        # output and formatting, while the dashboard keeps its tabs and input line.
-        if _hubc_mirror; then
+        # Preferred: borrow the hub's actual pane into this window, so typing goes
+        # to Claude natively. Mirroring is the fallback for a dashboard that isn't
+        # running as a pane (an older launch, or tmux unavailable).
+        if _hubc_attach_pane; then
+          _main_row "  ${C_D}비서 패널이 아래에 열렸습니다 · 그 안에서 바로 입력하세요${C_X}"
+        elif _hubc_mirror; then
           for hb_line in ${HUBC_VIEW[@]+"${HUBC_VIEW[@]}"}; do _main_row "$hb_line"; done
         else
           _main_row "  ${C_B}Hub${C_X}  ${C_D}$HUB:$HUBR${C_X}"
@@ -1926,6 +1992,8 @@ EOF
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
   printf '%s\033[?1049h\033[2J\033[?1000h\033[?1002h\033[?1003h\033[?1006h\033[?25l\033[?7l' "$(_theme_osc)"
   _dash_cleanup() {
+    # A borrowed hub pane must go home, or it stays stranded in this window.
+    declare -f _hubc_detach_pane >/dev/null && _hubc_detach_pane 2>/dev/null
     # OSC 110/111 restore the terminal's default fg/bg — the dashboard changed
     # them via OSC 10/11 above, and leaving them set would recolor other panes.
     printf '\033[0m\033]110\007\033]111\007\033[?1006l\033[?1003l\033[?1002l\033[?1000l\033[?7h\033[?25h\033[?1049l'
@@ -1981,8 +2049,10 @@ EOF
       if _hubc_key "$key"; then _draw; continue; fi
     fi
     case "$key" in
-      RIGHT) tab=$(( (tab+1) % ${#TABS[@]} )); mtop=0; HOVER_AREA=""; HOVER_INDEX=-1; HOVER_GROUP="" ;;
-      LEFT)  tab=$(( (tab-1+${#TABS[@]}) % ${#TABS[@]} )); mtop=0; HOVER_AREA=""; HOVER_INDEX=-1; HOVER_GROUP="" ;;
+      RIGHT) [ "${TABS[$tab]}" = Hub ] && _hubc_detach_pane
+             tab=$(( (tab+1) % ${#TABS[@]} )); mtop=0; HOVER_AREA=""; HOVER_INDEX=-1; HOVER_GROUP="" ;;
+      LEFT)  [ "${TABS[$tab]}" = Hub ] && _hubc_detach_pane
+             tab=$(( (tab-1+${#TABS[@]}) % ${#TABS[@]} )); mtop=0; HOVER_AREA=""; HOVER_INDEX=-1; HOVER_GROUP="" ;;
       UP)    if [ "$mtop" -gt 0 ]; then mtop=$((mtop-1)); _draw_scroll; fi; continue ;;
       DOWN)  if [ "$mtop" -lt "$MMAX" ]; then mtop=$((mtop+1)); _draw_scroll; fi; continue ;;
       MOUSE) case "$mseq" in *[Mm]) MOUSE_FINAL="${mseq: -1}" ;; *) continue ;; esac
@@ -2016,7 +2086,9 @@ EOF
              elif [ "$TASK_RESET_X0" -gt 0 ] && [ "${my:-0}" = "$TASK_RESET_Y" ] && [ "${mx:-0}" -ge "$TASK_RESET_X0" ] && [ "${mx:-0}" -le "$TASK_RESET_X1" ]; then
                 : > "$TASK_FILE" 2>/dev/null; TASK_STAMP=$(_task_file_stamp); DETAIL_MSG="작업 기록을 초기화했습니다"; _draw; continue
              elif [ "${my:-0}" = 2 ]; then local t hit=-1; for ((t=0;t<${#TABS[@]};t++)); do [ "${mx:-0}" -ge "${TX0[$t]}" ] && [ "${mx:-0}" -le "${TX1[$t]}" ] && { hit=$t; break; }; done
-                [ "$hit" -lt 0 ] && continue; tab=$hit; mtop=0; HOVER_AREA=tab; HOVER_INDEX=$hit; HOVER_GROUP=""
+                [ "$hit" -lt 0 ] && continue
+                [ "${TABS[$tab]}" = Hub ] && [ "$hit" -ne "$tab" ] && _hubc_detach_pane
+                tab=$hit; mtop=0; HOVER_AREA=tab; HOVER_INDEX=$hit; HOVER_GROUP=""
              elif [ "${mx:-0}" -gt "$LW" ]; then    # 우측 패널 클릭
                 continue
              elif [ "${my:-0}" -ge 4 ] && [ "${my:-0}" -le $(( 3 + LISTBODY )) ]; then    # 좌측 메인 패널 클릭
