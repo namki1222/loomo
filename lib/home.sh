@@ -984,20 +984,45 @@ EOF
     [ "$now" = "$HUBC_STAMP" ] && return
     _hubc_load && HUBC_WAITING=0
   }
-  _hubc_send() { # deliver one message to the hub pane, starting the hub if needed
-    local msg="$1" pane
-    [ -n "$msg" ] || return
+  _hubc_pane() { # hub pane id, booting the session when it isn't up yet
     if ! get_hub 2>/dev/null || [ -z "${HUB:-}" ]; then
       HUBC_MSG="허브 세션이 지정되지 않았어요 · Settings → Hub session"; return 1
     fi
     if ! tmux has-session -t "=$HUB" 2>/dev/null; then
-      HUBC_MSG="허브 세션을 시작하는 중…"
       ws_boot "$HUB" >/dev/null 2>&1 || { HUBC_MSG="허브 세션을 시작하지 못했어요"; return 1; }
     fi
+    local pane
     pane=$(tmux list-panes -t "=$HUB" -F "#{pane_id}	#{pane_title}" 2>/dev/null \
       | LC_ALL=C awk -F'\t' -v r="$HUBR" '$2==r{print $1; exit}')
     [ -n "$pane" ] || { HUBC_MSG="허브 패널을 찾지 못했어요: $HUB:$HUBR"; return 1; }
-    # Same delivery tell uses: type the text, submit, then confirm it left the box.
+    printf '%s' "$pane"
+  }
+  _hubc_open() { # hand the terminal to the hub's own Claude UI, then come back
+    local pane
+    pane=$(_hubc_pane) || return 1
+    # Rebuilding the chat in bash can never stream or look like Claude's own UI —
+    # so show the real pane instead. Detaching returns to the dashboard.
+    _dash_cleanup
+    printf '\033[?1049l\033[2J\033[H'
+    if inside_loomo_tmux; then
+      # Already a client of this server — attaching again would nest.
+      tmux switch-client -t "=$HUB" 2>/dev/null
+      tmux select-pane -t "$pane" 2>/dev/null
+      tmux resize-pane -Z -t "$pane" 2>/dev/null
+    else
+      tmux attach -t "=$HUB" \; select-pane -t "$pane" \; resize-pane -Z -t "$pane" 2>/dev/null
+    fi
+    # Re-enter the TUI exactly as the dashboard first set it up.
+    stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
+    printf '%s\033[?1049h\033[2J\033[?1000h\033[?1002h\033[?1003h\033[?1006h\033[?25l\033[?7l' "$(_theme_osc)"
+    HUBC_MSG=""; HUBC_SEEN_AT=-99
+    return 0
+  }
+  _hubc_send() { # deliver one message to the hub pane without leaving the dashboard
+    local msg="$1" pane
+    [ -n "$msg" ] || return
+    pane=$(_hubc_pane) || return 1
+    # Same delivery tell uses: type the text, then submit.
     tmux send-keys -t "$pane" -l "$msg" 2>/dev/null
     sleep 0.4
     tmux send-keys -t "$pane" Enter 2>/dev/null
@@ -1370,15 +1395,22 @@ EOF
         _main_row "  ${C_C}${C_B}[Settings → Hub session]${C_X} 에서 먼저 지정하세요." settingshubjump
       else
         rr="${C_D}•${C_X}"; tmux has-session -t "=$HUB" 2>/dev/null && rr="${C_G}${C_B}•${C_X}"
-        _main_row "  ${C_B}Hub chat${C_X}  $rr ${C_D}$HUB:$HUBR${C_X}  ${C_D}아래 입력창에 쓰면 허브가 답합니다${C_X}"
+        _main_row "  ${C_B}Hub chat${C_X}  $rr ${C_D}$HUB:$HUBR${C_X}"
+        _main_row "  ${C_C}${C_B}[대화 열기]${C_X}  ${C_D}비서의 Claude 화면을 그대로 엽니다 · 나올 때 Ctrl-b d${C_X}" hubopen
+        _main_row "  ${C_D}빠르게 한 마디만 시킬 거면 아래 입력창에 바로 써도 됩니다${C_X}"
         _main_row ""
         [ -n "$HUBC_FILE" ] || _hubc_load
         hb_w=$(( LW - 8 )); [ "$hb_w" -lt 20 ] && hb_w=20
         if [ "${#HUBC_ROLE[@]}" -eq 0 ]; then
           _main_row "  ${C_D}아직 대화가 없어요. 허브에게 말을 걸어보세요.${C_X}"
           _main_row "  ${C_D}예: \"하울팟 서버 상태 확인해줘\"${C_X}"
+        else
+          _main_row "  ${C_D}최근 대화${C_X}"
+          _main_row ""
         fi
-        for ((hb_i=0; hb_i<${#HUBC_ROLE[@]}; hb_i++)); do
+        # Only a short tail here — the full, live view is the pane itself.
+        hb_i=$(( ${#HUBC_ROLE[@]} - 8 )); [ "$hb_i" -lt 0 ] && hb_i=0
+        for ((; hb_i<${#HUBC_ROLE[@]}; hb_i++)); do
           if [ "${HUBC_ROLE[$hb_i]}" = user ]; then _main_row "  ${C_C}${C_B}› 나${C_X}"
           else _main_row "  ${C_G}${C_B}● 비서${C_X}"; fi
           hb_body="${HUBC_TEXT[$hb_i]}"
@@ -1998,6 +2030,7 @@ EOF
                   Hub) local hi hact
                        hi=$(( mtop + ${my:-0} - 4 )); hact="${SACT[$hi]:-none}"
                        case "$hact" in
+                         hubopen) _hubc_open; _draw; continue ;;
                          settingshubjump) for ((i=0;i<${#TABS[@]};i++)); do [ "${TABS[$i]}" = Settings ] && tab=$i; done
                                           SETTINGS_PAGE=hub; mtop=0 ;;
                          *) continue ;;

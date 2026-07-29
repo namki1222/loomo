@@ -127,8 +127,8 @@ Run `loomo` to open the dashboard. Nearly everything can be managed here with th
 
 ### Hub
 
-- Chat with your Hub session without leaving the dashboard — type in the input line and the hub answers there.
-- It is the hub itself, not a separate assistant: same conversation, and it still delegates work to your project panes.
+- See the hub's recent turns, and open its own Claude screen with **[대화 열기]** — full streaming and Claude's own formatting, because it is that session rather than a copy of it. `Ctrl-b d` returns you to the dashboard.
+- For a quick one-liner, type into the dashboard's input line instead; it goes straight to the hub.
 - The hub session starts automatically if it isn't running.
 
 ### Adopt
