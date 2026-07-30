@@ -1131,12 +1131,28 @@ EOF
       # The tab row is row 2 (clicks are matched against it), so 2 is the floor.
       tmux resize-pane -t "$TMUX_PANE" -y 2 2>/dev/null
       HUBC_JOINED=1; HUBC_ORIGIN="$origin"; HUBC_PANE="$pane"
-      tmux select-pane -t "$pane" 2>/dev/null      # type into Claude right away
+      # Focus goes to Claude so typing is native. The cost is that the terminal's
+      # Ctrl-C reaches Claude and ends it, so a dead pane is revived below.
+      tmux select-pane -t "$pane" 2>/dev/null
       return 0
     fi
     [ -n "$HUBC_KEEP" ] && tmux kill-pane -t "$HUBC_KEEP" 2>/dev/null
     HUBC_KEEP=""
     return 1
+  }
+  _hubc_revive() { # bring the hub's agent back after it exited while we held its pane
+    local row dir rid agent
+    [ -n "${HUB:-}" ] && [ -n "${HUBR:-}" ] || return 1
+    row=$(grep -vE '^[[:space:]]*(#|$)' "$WS_CONF" 2>/dev/null \
+      | LC_ALL=C awk -F'|' -v s="$HUB" -v r="$HUBR" '$1==s && $2==r {print $3"|"$4"|"$5; exit}')
+    [ -n "$row" ] || return 1
+    IFS='|' read -r dir rid agent <<< "$row"
+    # Same path a missing pane normally takes, so it comes back with its role,
+    # its conversation (resume id) and the window's layout.
+    ws_add_configured_panel "$HUB" "$HUBR" "$dir" "$rid" "${agent:-claude}" >/dev/null 2>&1 || return 1
+    [ -n "$HUBC_KEEP" ] && tmux kill-pane -t "$HUBC_KEEP" 2>/dev/null
+    HUBC_KEEP=""
+    return 0
   }
   _hubc_detach_pane() { # send the hub's pane home again
     [ "$HUBC_JOINED" = 1 ] || return 0
@@ -1146,10 +1162,12 @@ EOF
       tmux join-pane -s "$HUBC_PANE" -t "$HUBC_ORIGIN" 2>/dev/null
       [ -n "$HUBC_KEEP" ] && tmux kill-pane -t "$HUBC_KEEP" 2>/dev/null
     else
-      # Claude exited while we had its pane. Drop the corpse and leave the
-      # placeholder holding the hub's window, so the session survives for a restart.
+      # Claude exited while we held its pane — Ctrl-C reaches it, since it has the
+      # focus. Bury the corpse and start it again on its own window, so the hub is
+      # back on its conversation instead of waiting to be repaired by hand.
       [ -n "$HUBC_PANE" ] && tmux kill-pane -t "$HUBC_PANE" 2>/dev/null
-      HUBC_MSG="비서 세션이 종료됐어요 · Sessions 탭에서 다시 시작하세요"
+      if _hubc_revive; then HUBC_MSG="비서가 종료돼 다시 시작했어요 · 대화는 이어집니다"
+      else HUBC_MSG="비서 세션이 종료됐어요 · Sessions 탭에서 다시 시작하세요"; fi
     fi
     [ -n "$HUBC_SIDEBAR" ] && tmux kill-pane -t "$HUBC_SIDEBAR" 2>/dev/null
     HUBC_JOINED=0; HUBC_PANE=""; HUBC_ORIGIN=""; HUBC_KEEP=""; HUBC_SIDEBAR=""
