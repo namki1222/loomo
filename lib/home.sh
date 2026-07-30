@@ -1098,7 +1098,13 @@ EOF
     local pane origin
     if [ "$HUBC_JOINED" = 1 ]; then
       # Claude may have exited under us; notice it instead of holding a corpse.
-      [ "$(tmux display-message -p -t "$HUBC_PANE" '#{pane_dead}' 2>/dev/null)" = 0 ] && return 0
+      if [ "$(tmux display-message -p -t "$HUBC_PANE" '#{pane_dead}' 2>/dev/null)" = 0 ]; then
+        # tmux redistributes pane heights whenever the window resizes, which
+        # leaves the strip anywhere from one row to a dozen — and the tab row
+        # disappears with it. Put it back whenever it has drifted.
+        [ "$ROWS" -ne 2 ] && tmux resize-pane -t "$TMUX_PANE" -y 2 2>/dev/null
+        return 0
+      fi
       _hubc_detach_pane
       return 1
     fi
