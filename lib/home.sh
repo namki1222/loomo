@@ -19,6 +19,10 @@ cmd_sidebar() {
     hubrun="○ stopped"
     [ -n "${HUB:-}" ] && tmux has-session -t "=$HUB" 2>/dev/null && hubrun="● running"
     printf '\033[H'
+    # Same shape as the dashboard's own column: a titled region per topic,
+    # separated by rules, each padded so the sections keep their places.
+    _sbrule() { printf '\033[2K%s%s%s\n' "${C_D}" "$(_hrn "$cols")" "${C_X}"; }
+    _sbpad() { local n="$1"; while [ "$n" -gt 0 ]; do printf '\033[2K\n'; n=$((n-1)); done; }
     # Quota rows arrive with the dashboard's @X@ tone markers; translate them here.
     # Never cut by byte — a colored row is mostly escape bytes, and slicing it
     # to the column count would leave nothing visible. tmux clips the overflow.
@@ -32,24 +36,29 @@ cmd_sidebar() {
       esac
       printf '\033[2K%s\033[0m\n' "$t"
     }
+    local unit=$(( rows / 5 )); [ "$unit" -lt 3 ] && unit=3
     _sb "${C_C}${C_B}tasks${C_X}"
     if [ "${TASK_ATTENTION:-0}" -gt 0 ]; then _sb "  ${C_R}! 확인 필요 ${TASK_ATTENTION}${C_X}"
     elif [ "${TASK_RUNNING:-0}" -gt 0 ]; then _sb "  ${C_G}● 진행 중 ${TASK_RUNNING}${C_X}"
     else _sb "  ${C_D}대기 중 작업 없음${C_X}"; fi
     _sb "  ${C_D}진행 ${TASK_RUNNING:-0} · 완료 ${TASK_DONE:-0}${C_X}"
-    _sb ""
+    _sbpad $(( unit - 3 ))
+    _sbrule
     _sb "${C_C}${C_B}비서(hub)${C_X}"
     if [ -n "${HUB:-}" ]; then _sb "  $HUB"; _sb "  ${C_D}${hubrun}${C_X}"
     else _sb "  ${C_D}없음 (Settings)${C_X}"; _sb ""; fi
-    _sb ""
+    _sbpad $(( unit - 3 ))
+    _sbrule
     _sb "${C_C}${C_B}claude usage${C_X}"
     _sb "$(_quota_line session "${CLAUDE_SESSION:-0}")"
     _sb "$(_quota_line week "${CLAUDE_WEEK:-0}")"
-    _sb ""
+    _sbpad $(( unit - 3 ))
+    _sbrule
     _sb "${C_C}${C_B}codex usage${C_X}"
     _sb "$(_quota_line 5h "${CODEX_5H:-0}")"
     _sb "$(_quota_line week "${CODEX_WEEK:-0}")"
-    _sb ""
+    _sbpad $(( unit - 3 ))
+    _sbrule
     _sb "${C_C}${C_B}team${C_X}"
     _sb "  ${C_D}${TEAM_RUNNING:-0}/${TEAM_TOTAL:-0} sessions${C_X}"
     _sb "  ${C_D}waiting ${TEAM_WAITING:-0} · stale ${TEAM_STALE:-0}${C_X}"
