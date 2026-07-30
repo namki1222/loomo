@@ -1162,12 +1162,15 @@ EOF
       tmux join-pane -s "$HUBC_PANE" -t "$HUBC_ORIGIN" 2>/dev/null
       [ -n "$HUBC_KEEP" ] && tmux kill-pane -t "$HUBC_KEEP" 2>/dev/null
     else
-      # Claude exited while we held its pane — Ctrl-C reaches it, since it has the
-      # focus. Bury the corpse and start it again on its own window, so the hub is
-      # back on its conversation instead of waiting to be repaired by hand.
+      # The hub's pane holds the focus, so ending it is how Ctrl-C arrives here:
+      # read that as "close loomo". Bury the corpse, put the hub back on its
+      # conversation for the next launch, and quit rather than sit in a half
+      # state. Starting loomo again brings this view back.
       [ -n "$HUBC_PANE" ] && tmux kill-pane -t "$HUBC_PANE" 2>/dev/null
-      if _hubc_revive; then HUBC_MSG="비서가 종료돼 다시 시작했어요 · 대화는 이어집니다"
-      else HUBC_MSG="비서 세션이 종료됐어요 · Sessions 탭에서 다시 시작하세요"; fi
+      [ -n "$HUBC_SIDEBAR" ] && tmux kill-pane -t "$HUBC_SIDEBAR" 2>/dev/null
+      HUBC_JOINED=0; HUBC_PANE=""; HUBC_ORIGIN=""; HUBC_SIDEBAR=""
+      _hubc_revive || true
+      exit 0
     fi
     [ -n "$HUBC_SIDEBAR" ] && tmux kill-pane -t "$HUBC_SIDEBAR" 2>/dev/null
     HUBC_JOINED=0; HUBC_PANE=""; HUBC_ORIGIN=""; HUBC_KEEP=""; HUBC_SIDEBAR=""
@@ -1877,6 +1880,7 @@ EOF
     done
   }
   _draw_scroll() { # Adopt preview stays untouched while only its left list scrolls
+    [ "$ROWS" -le 6 ] && return   # compact strip: rows 3+ clamp onto the tab row
     if [ "${TABS[$tab]}" = Adopt ] && [ -n "$ADOPT_SELECTED" ] && [ "$SESSION_LEFT_W" -gt 0 ]; then
       local r idx s sact group active
       for ((r=0;r<LISTBODY;r++)); do
@@ -1906,6 +1910,7 @@ EOF
   }
 
   _draw_input() { # fast path: typing must not rebuild sessions, usage, or sidebar
+    [ "$ROWS" -le 6 ] && return   # no input line in the compact strip
     printf '\033[%d;1H %s❯%s %s\033[K' "$(( ROWS - 1 ))" "${C_C}${C_B}" "${C_X}" "$INPUT"
     printf '\033[s%s▏%s\033[u' "${C_D}" "${C_X}"
   }
@@ -2104,6 +2109,10 @@ EOF
     [ "$old" != "$HOVER_AREA:$HOVER_INDEX:$HOVER_GROUP" ]
   }
   _draw_hover() {
+    # In the compact strip only the tabs exist. The other two paint rows 3 and
+    # below, which a two-row pane clamps back onto the tab row — that is what
+    # made the tabs vanish while the pointer moved over them.
+    if [ "$ROWS" -le 6 ]; then _draw_tabs; return; fi
     _draw_tabs; _draw_scroll
     _draw_input
   }
