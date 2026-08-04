@@ -209,6 +209,67 @@ _conf_bind_id() { # session role id — fill only an unbound row, atomically
   return "$rc"
 }
 
+_conf_rebind_id() { # session role id — repoint a row that already has an id
+  local session="$1" role="$2" id="$3" tmp lock="${WS_CONF}.lock" n=0 rc
+  [ -n "$session" ] && [ -n "$role" ] && [ -n "$id" ] || return 1
+  while ! mkdir "$lock" 2>/dev/null; do
+    [ "$n" -lt 100 ] || return 1
+    sleep 0.05; n=$((n+1))
+  done
+  tmp="${WS_CONF}.$$"
+  LC_ALL=C awk -F'|' -v OFS='|' -v s="$session" -v r="$role" -v id="$id" '
+    $1==s && $2==r {$4=id; changed=1} {print}
+    END {if (!changed) exit 3}
+  ' "$WS_CONF" > "$tmp"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then mv "$tmp" "$WS_CONF"; else rm -f "$tmp"; fi
+  rmdir "$lock" 2>/dev/null || true
+  return "$rc"
+}
+
+# A pane's conversation id is bound once, when the pane is first created. But the
+# agent starts a new conversation on /clear, on compaction, or when it is run in
+# that folder outside loomo — and the pane then resumes a conversation that has
+# been superseded. Pick whichever transcript in the folder was spoken in last.
+_latest_conv_id() { # dir agent → id, empty when there is nothing newer to find
+  [ "${2:-claude}" = claude ] || return 0        # codex stores sessions differently
+  node - "$1" <<'NODE' 2>/dev/null
+const fs=require('fs'), os=require('os'), path=require('path');
+const enc=String(process.argv[2]||'').replace(/[^A-Za-z0-9]/g,'-');
+const dir=path.join(os.homedir(),'.claude','projects',enc);
+let files=[]; try { files=fs.readdirSync(dir).filter(f=>f.endsWith('.jsonl')); } catch { process.exit(0); }
+let bestId='', bestAt='';
+for (const f of files) {
+  const p=path.join(dir,f);
+  let buf='';
+  try {                                   // transcripts reach tens of MB; the tail is enough
+    const size=fs.statSync(p).size, len=Math.min(size, 64*1024);
+    const fd=fs.openSync(p,'r'), b=Buffer.alloc(len);
+    fs.readSync(fd,b,0,len,size-len); fs.closeSync(fd); buf=b.toString('utf8');
+  } catch { continue; }
+  let at='';
+  for (const line of buf.split('\n')) {
+    let o; try { o=JSON.parse(line); } catch { continue; }
+    if ((o.type==='user'||o.type==='assistant') && o.timestamp) at=o.timestamp;
+  }
+  if (at && at>bestAt) { bestAt=at; bestId=f.replace(/\.jsonl$/,''); }
+}
+if (bestId) process.stdout.write(bestId);
+NODE
+}
+
+_resume_id_for() { # session role dir agent rid → the id to resume, repointing when stale
+  local session="$1" role="$2" dir="$3" agent="${4:-claude}" rid="${5:-}" latest
+  latest=$(_latest_conv_id "$dir" "$agent")
+  if [ -n "$latest" ] && [ "$latest" != "$rid" ]; then
+    if _conf_rebind_id "$session" "$role" "$latest"; then
+      loomo_log INFO conversation.repointed "session=$session" "role=$role" "from=${rid:-none}" "to=$latest"
+      rid="$latest"
+    fi
+  fi
+  printf '%s' "$rid"
+}
+
 _conf_get_id() { # session role
   LC_ALL=C awk -F'|' -v s="$1" -v r="$2" '$1==s && $2==r {print $4; exit}' "$WS_CONF" 2>/dev/null
 }
@@ -942,6 +1003,7 @@ ws_add_configured_panel() { # session role dir resume_id agent — add one missi
   }
   set_pane_role "$pane" "$role" 2>/dev/null || true
   tmux set-option -p -t "$pane" remain-on-exit on 2>/dev/null || true
+  rid=$(_resume_id_for "$session" "$role" "$dir" "$agent" "$rid")
   if ! tmux send-keys -t "$pane" "$(agent_launch "$agent" "$rid" "$session" "$role" "$dir")" Enter 2>>"$LOOMO_LOG_FILE"; then
     loomo_log ERROR panel.add.launch_failed "session=$session" "role=$role" "pane=$pane" "agent=$agent"
     tmux kill-pane -t "$pane" 2>/dev/null || true
@@ -986,6 +1048,7 @@ ws_boot() { # $1=세션 — 설정대로 부트스트랩하고 실행 상태를 
     set_pane_role "$p" "$R" </dev/null
     tmux set-option -p -t "$p" remain-on-exit on </dev/null 2>/dev/null   # 구버전 tmux(pane-died) 캐스케이드용 — 패널 프로세스 죽어도 남겨두면 pane-died 훅이 세션을 kill
     # 4번째=대화 세션ID(이어받기) · 5번째=에이전트(패널별 claude/codex). exec로 셸 대체(종료 시 패널 정리)
+    RID=$(_resume_id_for "$S" "$R" "$D" "${AG:-$TELL_AGENT}" "${RID:-}")
     tmux send-keys -t "$p" "$(agent_launch "${AG:-$TELL_AGENT}" "${RID:-}" "$S" "$R" "$D")" Enter </dev/null
     # Serialize fresh starts until their identity is known. This prevents two
     # Codex panes in the same cwd from claiming the same newly-created log.
