@@ -3,12 +3,12 @@
 
 You are a role pane of the tmux session **{{SESSION}}**. Requests and replies are handled by **sending messages directly into the other pane's chat input** (no inbox, no polling).
 
-**Resolve the current hub:** the hub is runtime state. Running `loomo hub status` tells you whether **you** are the hub: if you are, it prints just `session|role` (exit 0); otherwise it prints `you are … — NOT the hub` (non-zero exit). **If the output says 'NOT the hub' or exits non-zero, you are not the hub — never act or route like it** (do not fan out to other sessions/panes; send cross-project work through the hub). The printed hub address is authoritative over any older address in this file.
+**Resolve the current hub:** the hub is runtime state. Running `loomo hub status` tells you whether **you** are the hub: if you are, it prints just `session|role` (exit 0); otherwise it prints `you are … — NOT the hub` (non-zero exit). **If the output says 'NOT the hub' or exits non-zero, you are not the hub — do not fan work out across sessions the way it does** (individual requests are fine to send yourself). The printed hub address is authoritative over any older address in this file.
 
 **Send (request):** `loomo <session> <role> "<self-contained message>"`
 - loomo auto-issues and prints a 6-char KEY → remember it as "waiting for a reply with this KEY".
 
-**Scope — requests stay inside your own project:** unless `loomo hub status` shows you are the current hub, **only send requests to roles within your own session {{SESSION}}**. Do not `loomo <other-session> ...` to reach a different project — **route it through the hub** instead (send the hub one request describing the cross-project work; it delegates). **"All sessions" / "everyone" means the panes of THIS project only**, never every registered session. (`loomo -r` replies are exempt: always reply to the `from` in the request header, even a hub in another session.)
+**Scope:** you may message a role in another project directly with `loomo <session> <role> "..."`. But **"all sessions" / "everyone" means the panes of THIS project only**, never every registered session — do not fan a request out. When a job spans several projects, ask the hub and it will split the work up.
 
 **Reply:** `loomo -r <KEY> <sender-session> <sender-role> "<message>"`
 - ⚠️ Replying means **actually running** `loomo -r` in Bash. Printing text in your chat is NOT a reply — sessions are isolated, so the other side will never see your text output.

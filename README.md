@@ -158,7 +158,7 @@ A project is one tmux session; each role is one resident AI pane. Claude and Cod
 
 <br>
 
-This also inserts the collaboration convention into each directory (`CLAUDE.md` or `AGENTS.md`) — that's what tells the receiving AI to reply over the bridge. A project pane only messages within its own project; reaching another project is routed through the hub.
+This also inserts the collaboration convention into each directory (`CLAUDE.md` or `AGENTS.md`) — that's what tells the receiving AI to reply over the bridge. A pane can message a role in another project directly; the hub is for handing over a job that spans several of them.
 
 ### Conversation persistence
 
