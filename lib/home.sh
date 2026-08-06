@@ -941,7 +941,11 @@ EOF
     if [ "$provider" = claude ]; then
       result=$(_account_mutate tok-use claude "$id" 2>/dev/null); rc=$?
       case "$rc" in
-        0) SETTINGS_MSG="Claude 계정 전환 완료 → $result · 새 패널·재시작 세션부터 적용" ;;
+        0) # Panes hold the account they launched with, so bring the running ones
+           # onto the new one; each resumes its own conversation.
+           local moved; moved=$(account_apply_to_running claude 2>/dev/null)
+           if [ "${moved:-0}" -gt 0 ]; then SETTINGS_MSG="Claude 계정 전환 완료 → $result · 실행 중 ${moved}개 패널도 이 계정으로 재시작"
+           else SETTINGS_MSG="Claude 계정 전환 완료 → $result · 새 패널부터 적용"; fi ;;
         4) SETTINGS_MSG="이 계정은 저장된 토큰이 없어요 · 먼저 Login 하세요" ;;
         3) SETTINGS_MSG="계정 프로필을 찾지 못했어요" ;;
         *) SETTINGS_MSG="계정 전환에 실패했어요" ;;
@@ -1702,7 +1706,7 @@ EOF
             _main_row "    $ap_mark $ap_detail  ${C_D}$ap_id${C_X}  $ap_action  ${C_R}[Logout]${C_X}" \
               acctrow "$ap_provider|$ap_id|$ap_active|$ap_token|$ap_logout_x"
             if [ "$ACCT_SWITCH" = "$ap_provider|$ap_id" ]; then
-              _main_row "      ${C_Y}이 계정으로 전환할까요?${C_X}  ${C_D}모든 새 패널이 이 계정으로 열립니다${C_X}"
+              _main_row "      ${C_Y}이 계정으로 전환할까요?${C_X}  ${C_D}실행 중인 패널도 이 계정으로 재시작됩니다 (대화는 유지, 진행 중 작업은 중단)${C_X}"
               _main_row "      ${C_D}[취소]${C_X}" acctswitchcancel
               _main_row "      ${C_C}${C_B}[전환]${C_X}" acctswitchconfirm "$ap_provider|$ap_id"
             fi

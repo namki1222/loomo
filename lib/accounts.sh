@@ -267,6 +267,59 @@ account_launch_prefix() { # provider — shell-safe prefix for commands sent to 
   printf 'env CODEX_HOME=%q ' "$root"
 }
 
+# A pane reads its account from the environment it was started with, and that
+# cannot be changed from outside — so panes already running keep the account they
+# launched under. Restarting them in place picks up the new one; each comes back
+# on its own conversation, since the launch command resumes it.
+account_apply_to_running() { # provider — relaunch that provider's live panes, prints how many
+  local provider="$1" done_n=0 skipped=0 pane session role dir rid agent cmd
+  provider=$(_account_provider "$provider") || return 1
+  while IFS='|' read -r session role dir rid agent; do
+    [ -n "$session" ] && [ -n "$role" ] || continue
+    [ "${agent:-claude}" = "$provider" ] || continue
+    tmux has-session -t "=$session" 2>/dev/null || continue
+    pane=$(tmux list-panes -t "=$session" -F '#{pane_id}	#{@loomo_role}	#{pane_title}' 2>/dev/null \
+      | LC_ALL=C awk -F'\t' -v r="$role" '$2==r || $3==r {print $1; exit}')
+    [ -n "$pane" ] || continue
+    # Never respawn the pane this is running in — it would kill the caller.
+    [ "$pane" = "${TMUX_PANE:-}" ] && { skipped=$((skipped+1)); continue; }
+    cmd=$(agent_launch "${agent:-$provider}" "$rid" "$session" "$role" "${dir/#\~/$HOME}")
+    if tmux respawn-pane -k -t "$pane" "$cmd" 2>/dev/null; then
+      set_pane_role "$pane" "$role" 2>/dev/null || true
+      done_n=$((done_n+1))
+    fi
+  done < <(grep -vE '^[[:space:]]*(#|$)' "$WS_CONF" 2>/dev/null)
+  printf '%s' "$done_n"
+  [ "$skipped" -gt 0 ] && return 2
+  return 0
+}
+
+_account_offer_restart() { # provider — apply the new account to live panes, with consent
+  local provider="$1" live answer n
+  live=$(_account_live_pane_count "$provider")
+  if [ "${live:-0}" -eq 0 ]; then
+    note "new panes start on this account"
+    return 0
+  fi
+  note "$live pane(s) are running on the previous account"
+  choose answer "restart them onto this account? (their conversations are kept; work in progress stops)" No Yes
+  [ "$answer" = Yes ] || { note "left running · they switch when restarted"; return 0; }
+  n=$(account_apply_to_running "$provider")
+  ok "restarted $n pane(s) on this account"
+}
+
+_account_live_pane_count() { # provider — registered panes of that agent currently up
+  local provider="$1" session role dir rid agent n=0
+  while IFS='|' read -r session role dir rid agent; do
+    [ -n "$session" ] && [ -n "$role" ] || continue
+    [ "${agent:-claude}" = "$provider" ] || continue
+    tmux has-session -t "=$session" 2>/dev/null || continue
+    tmux list-panes -t "=$session" -F '#{@loomo_role}	#{pane_title}' 2>/dev/null \
+      | LC_ALL=C awk -F'\t' -v r="$role" '$1==r || $2==r {found=1} END{exit !found}' && n=$((n+1))
+  done < <(grep -vE '^[[:space:]]*(#|$)' "$WS_CONF" 2>/dev/null)
+  printf '%s' "$n"
+}
+
 _account_resolve() { _account_mutate resolve "$1" "${2:-active}"; }
 
 _account_connected() { # provider id root
@@ -452,7 +505,7 @@ cmd_account() {
         result=$(_account_mutate tok-use claude "$target" 2>/dev/null); rc=$?
         case "$rc" in
           0) ok "claude active account · $result"
-             note "new panes and restarted sessions use this account; existing panes keep their current login" ;;
+             _account_offer_restart claude ;;
           4) warn "this account has no stored token yet · loomo account login claude $target"; return 1 ;;
           3) warn "account profile not found: $target"; return 1 ;;
           *) warn "account switch failed"; return 1 ;;
