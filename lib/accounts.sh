@@ -318,15 +318,42 @@ _account_token_capture() { # id — run `claude setup-token` interactively, stor
   tmp=$(mktemp "${TMPDIR:-/tmp}/loomo-token.XXXXXX") || return 1
   chmod 600 "$tmp" 2>/dev/null
   note "log in as the account you want to add — loomo stores the long-lived token it prints"
+  # The browser decides which account authorizes: signed in already, the flow
+  # approves that one without offering a chooser. Say so, or every account added
+  # from the same browser session is the same account again.
+  note "already signed in to claude.ai as someone else? sign out there first, or use a private window"
   # script(1) gives setup-token a pty, so its prompts stay interactive while we capture the output.
   script -q "$tmp" claude setup-token || true
   token=$(LC_ALL=C grep -oE 'sk-ant-oat[0-9]{2}-[A-Za-z0-9_-]+' "$tmp" 2>/dev/null | tail -1)
   rm -f "$tmp"
   [ -n "$token" ] || { warn "no token was issued (login may not have completed)"; return 1; }
   IFS=$'\t' read -r email plan <<< "$(_account_token_identity "$token")"
+  owner=$(_account_email_owner "$email" "$id")
+  if [ -n "$owner" ]; then
+    warn "that is the same account loomo already has ($email)"
+    note "the browser approved its current session · sign out of claude.ai (or use a private window) and try again"
+    return 2
+  fi
   LOOMO_TOKEN_IN="$token" LOOMO_TOKEN_EMAIL="$email" LOOMO_TOKEN_PLAN="$plan" \
     _account_mutate tok-save claude "$id" >/dev/null || { warn "could not store the token"; return 1; }
   ok "token stored · ${email:-connected}${plan:+ · $plan}"
+}
+
+_account_email_owner() { # email [except-id] — profile already holding this account
+  local email="$1" except="${2:-}" d id
+  [ -n "$email" ] || return 0
+  for d in "$ACCOUNT_PROFILES_ROOT"/claude/*/; do
+    [ -d "$d" ] || continue
+    id=$(basename "$d")
+    [ "$id" = "$except" ] && continue
+    [ -s "$d/oauth-token" ] || continue
+    node -e '
+      const fs=require("fs");
+      try { if (JSON.parse(fs.readFileSync(process.argv[1],"utf8")).email === process.argv[2]) process.exit(0); } catch {}
+      process.exit(1);
+    ' "$d/oauth-token.meta.json" "$email" 2>/dev/null && { printf '%s' "$id"; return 0; }
+  done
+  return 0
 }
 
 _account_login() { # provider id/index action
@@ -382,7 +409,14 @@ cmd_account() {
         result=$(_account_mutate add claude) || return 1
         IFS=$'\t' read -r id root <<< "$result"
         ok "created claude profile · $id"
-        _account_token_capture "$id" || { warn "profile kept · finish it later with: loomo account login claude $id"; return 1; }
+        _account_token_capture "$id"; rc=$?
+        if [ "$rc" = 2 ]; then
+          # It authorized an account we already hold, so this slot has no purpose.
+          _account_mutate remove claude "$id" >/dev/null 2>&1
+          note "no profile was added"
+          return 1
+        fi
+        [ "$rc" = 0 ] || { warn "profile kept · finish it later with: loomo account login claude $id"; return 1; }
         _account_mutate tok-use claude "$id" >/dev/null 2>&1 \
           && { ok "claude active account · $id"; note "new panes and restarted sessions use this account"; }
       else
