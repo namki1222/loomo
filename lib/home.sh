@@ -1248,6 +1248,10 @@ EOF
     local msg="$1" pane
     [ -n "$msg" ] || return
     pane=$(_hubc_pane) || return 1
+    # Scrolling a pane with the wheel puts it in copy-mode, where keys are read as
+    # copy-mode commands instead of text. Leave it first (see bin/tell).
+    [ "$(tmux display-message -p -t "$pane" '#{pane_in_mode}' 2>/dev/null)" = 1 ] &&
+      { tmux send-keys -X -t "$pane" cancel 2>/dev/null; sleep 0.2; }
     # Same delivery tell uses: type the text, then submit.
     tmux send-keys -t "$pane" -l "$msg" 2>/dev/null
     sleep 0.4

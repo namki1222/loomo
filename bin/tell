@@ -299,6 +299,15 @@ else
   MSG="[$HDR_REQ - $KEY$SRC] $MSG"
 fi
 
+# A pane enters copy-mode on its own whenever someone scrolls it with the wheel
+# (mouse is on). Keys sent there are read as copy-mode commands rather than text —
+# an 'f' in the message opens tmux's "(jump forward)" prompt and the rest is
+# swallowed — so leave that mode before typing anything.
+if [ "$(tmux display-message -p -t "$PANE" '#{pane_in_mode}' 2>/dev/null)" = 1 ]; then
+  tmux send-keys -X -t "$PANE" cancel 2>/dev/null
+  sleep 0.2
+fi
+
 # 입력창 미제출 텍스트(사용자 타이핑) 감지 → 덮어쓰기 방지 대기
 has_unsubmitted_input() {
   local line
