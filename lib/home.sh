@@ -121,10 +121,52 @@ DASH_SESSION="${LOOMO_DASH_SESSION:-__loomo_dash}"
 
 # Host the dashboard in its own tmux session, then attach to it. Re-running loomo
 # reattaches instead of stacking a second dashboard.
+# The Hub tab lends a pane out of its own session, so the dashboard has to hand
+# it back on the way out. When the dashboard goes away without getting to that —
+# killed outright, or its pane closed — the pane is stranded here and its home
+# session is left holding only the placeholder. Repair that on the way in, since
+# tmux keeps both around long after the process that arranged them is gone.
+_dash_repair_stale() {
+  local pane role session home placeholder
+  tmux has-session -t "=$DASH_SESSION" 2>/dev/null || return 0
+  # A live dashboard means this is a second launch; leave it alone. It marks its
+  # own pane, since the sidebar it spawns runs bash too and cannot be told apart
+  # by process name.
+  tmux list-panes -t "=$DASH_SESSION" -F '#{@loomo_dash}' 2>/dev/null \
+    | grep -qx 1 && return 0
+  while IFS=$'\t' read -r pane role; do
+    [ -n "$role" ] || continue          # only borrowed panes carry a loomo role
+    home=$(grep -vE '^[[:space:]]*(#|$)' "$WS_CONF" 2>/dev/null \
+      | LC_ALL=C awk -F'|' -v r="$role" '$2==r {print $1; exit}')
+    [ -n "$home" ] || continue
+    if tmux has-session -t "=$home" 2>/dev/null; then
+      tmux join-pane -s "$pane" -t "=$home:" 2>/dev/null && {
+        set_pane_role "$pane" "$role" 2>/dev/null || true
+        # Whatever held that window open while the pane was away can go now.
+        placeholder=$(tmux list-panes -t "=$home" -F '#{pane_id}	#{pane_current_command}' 2>/dev/null \
+          | LC_ALL=C awk -F'\t' '$2=="sleep" {print $1}')
+        for p in $placeholder; do tmux kill-pane -t "$p" 2>/dev/null; done
+        loomo_log INFO dashboard.pane.returned "role=$role" "session=$home"
+        # The agent may have exited while the pane was away — Ctrl-C reaches it,
+        # since it holds the focus — leaving a pane that is only a dead shell.
+        # Drop that session so the usual boot brings it back on its conversation.
+        case "$(tmux display-message -p -t "$pane" '#{pane_dead}:#{pane_current_command}' 2>/dev/null)" in
+          1:*|*:bash|*:zsh|*:sh)
+            tmux kill-session -t "=$home" 2>/dev/null
+            ws_boot "$home" >/dev/null 2>&1 || true
+            loomo_log INFO dashboard.session.rebooted "session=$home" ;;
+        esac
+      }
+    fi
+  done < <(tmux list-panes -t "=$DASH_SESSION" -F '#{pane_id}	#{@loomo_role}' 2>/dev/null)
+  tmux kill-session -t "=$DASH_SESSION" 2>/dev/null
+}
+
 _dash_in_tmux() {
   local sz rows cols
   sz=$(stty size </dev/tty 2>/dev/null); rows=${sz%% *}; cols=${sz##* }
   [ -n "$rows" ] || rows=40; [ -n "$cols" ] || cols=120
+  _dash_repair_stale
   if ! tmux has-session -t "=$DASH_SESSION" 2>/dev/null; then
     tmux new-session -d -s "$DASH_SESSION" -x "$cols" -y "$rows" \
       "LOOMO_DASH_PANE=1 $(printf '%q' "$0")" 2>/dev/null || {
@@ -1959,6 +2001,10 @@ EOF
     # there is only room for the tabs. Everything else is drawn by absolute row
     # and would land on top of them. Tabs stay on row 2 so click targets hold.
     if [ "$ROWS" -le 6 ]; then
+      # The strip skips _build_main, and that is where a borrowed pane is checked
+      # on. Without this the dashboard never notices Claude exiting and just sits
+      # there — so keep watching it from here too.
+      [ "${TABS[$tab]}" = Hub ] && { _hubc_attach_pane >/dev/null 2>&1 || true; }
       printf '\033[1;1H %s비서 패널에서 바로 입력하세요 · Esc 중단 · 다른 탭을 누르면 패널을 돌려줍니다%s\033[K' "${C_D}" "${C_X}"
       _draw_tabs
       local _r; for ((_r=3;_r<=ROWS;_r++)); do printf '\033[%d;1H\033[K' "$_r"; done
@@ -2129,6 +2175,10 @@ EOF
   # 화면에 echo되지 않도록 TUI 수명 전체에서 입력 모드를 고정한다.
   local TTY_STATE; TTY_STATE=$(stty -g </dev/tty 2>/dev/null)
   stty -echo -icanon min 1 time 0 </dev/tty 2>/dev/null
+  # Mark this pane as the dashboard's own. The next launch reads it to tell a
+  # running dashboard from the leftovers of one that never got to clean up;
+  # process name cannot, since the sidebar it spawns is bash as well.
+  [ -n "${TMUX_PANE:-}" ] && tmux set-option -p -t "$TMUX_PANE" @loomo_dash 1 2>/dev/null
   printf '%s\033[?1049h\033[2J\033[?1000h\033[?1002h\033[?1003h\033[?1006h\033[?25l\033[?7l' "$(_theme_osc)"
   _dash_cleanup() {
     # A borrowed hub pane must go home, or it stays stranded in this window.
