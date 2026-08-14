@@ -23,5 +23,8 @@ You are a role pane of the tmux session **{{SESSION}}**. Requests and replies ar
 - A message with no header = direct input from the human user → handle it immediately, don't defer.
 
 **Security**: never put passwords, tokens, or secrets in a loomo message in plain text (they persist in the target pane's scrollback).
-**Message bodies**: Send only the work request or result. ACK, KEY, and `loomo -r` mechanics belong in this convention and must not be repeated in each message.
+**Message bodies**: Send only the work that was asked for and what came of it.
+- **Do not attach your own opinions, proposals, or recommendations.** Leave out lines like "I suggest doing X next" or "it would be better to…". The other session knows its own codebase better than you do, and the call is theirs. Include them only when the user explicitly asked you to.
+- Stick to facts: what you are asking for, what you did, what the result was.
+- ACK, KEY, and `loomo -r` mechanics belong in this convention and must not be repeated in each message.
 <!-- /claude-tell-bridge -->
